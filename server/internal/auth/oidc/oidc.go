@@ -47,6 +47,12 @@ type Config struct {
 	Audience      string   // expected `aud` claim
 	RoleClaim     string   // claim to read for role mapping; default "groups"
 	DefaultRole   string   // role granted when no claim matches; default "worker"
+	// KitpRoles (OIDC_ROLE_CLAIM=none): kitp manages every role and the IdP
+	// only signs people in. A sign-in grants and removes nothing (no
+	// role_mapping, no reconcile); DefaultRole goes, as a kitp grant, to a
+	// login's first sign-in when it has no role yet. AdoptIdPRoles makes
+	// the roles earlier sign-ins brought kitp's.
+	KitpRoles bool
 	RequiredPairs [][2]string
 
 	// BFF redirect knobs. ClientID is required for the
@@ -138,7 +144,11 @@ func FromEnv(lookup func(string) (string, bool)) *Config {
 		Audience:    env("OIDC_AUDIENCE"),
 		RoleClaim:   env("OIDC_ROLE_CLAIM"),
 	}
-	if cfg.RoleClaim == "" {
+	switch {
+	case strings.EqualFold(strings.TrimSpace(cfg.RoleClaim), "none"):
+		cfg.RoleClaim = ""
+		cfg.KitpRoles = true
+	case cfg.RoleClaim == "":
 		cfg.RoleClaim = "groups"
 	}
 	cfg.DefaultRole = "worker"
@@ -947,93 +957,22 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 		}
 	}
 
-	// Apply role mapping. The set of roles a user holds VIA OIDC
-	// (user_role.granted_via = 'oidc') is reconciled to exactly what the
-	// current claims justify: claim values are mapped to roles and granted
-	// here, and any OIDC-granted role the claims no longer justify is
-	// revoked below. Manual/admin grants (granted_via = 'manual') and
-	// project-scoped rows are never touched. Insert errors fall into three
-	// buckets:
-	//   - ErrNoRows on role_mapping lookup: that claim value just
-	//     isn't mapped, fall through to the next value.
-	//   - Real DB error on the lookup: propagate (rollback).
-	//   - Insert error: propagate.
-	values := claimValues(claims, v.cfg.RoleClaim)
-	// desired = the role_ids the current claims justify; the reconcile
-	// DELETE keeps exactly these among the user's 'oidc' global grants.
-	desired := make([]int64, 0, len(values)+1)
-	for _, val := range values {
-		var roleID int64
-		err := txScan(ctx, tx, `SELECT role_id FROM role_mapping WHERE claim_value = :value`, map[string]any{"value": val}, &roleID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return 0, "", fmt.Errorf("oidc: role_mapping lookup %q: %w", val, err)
-		}
-		if err := txExec(ctx, tx, `
-			INSERT INTO user_role (user_id, role_id, scope_card_id, granted_via)
-			VALUES (:user, :role, NULL, 'oidc')
-			ON CONFLICT DO NOTHING
-		`, map[string]any{"user": userID, "role": roleID}); err != nil {
-			return 0, "", fmt.Errorf("oidc: apply role: %w", err)
-		}
-		desired = append(desired, roleID)
-	}
-	if len(desired) == 0 && v.cfg.DefaultRole != "" {
-		var roleID int64
-		err := txScan(ctx, tx, `SELECT id FROM role WHERE name = :name`, map[string]any{"name": v.cfg.DefaultRole}, &roleID)
-		switch {
-		case errors.Is(err, pgx.ErrNoRows):
-			// Configured default_role doesn't exist in the role table —
-			// a misconfiguration, not a runtime failure. Log and move on
-			// so the user still ends up provisioned (just without a
-			// default role).
-			slog.Default().LogAttrs(ctx, slog.LevelWarn, "oidc default role not found",
-				slog.String("role", v.cfg.DefaultRole))
-		case err != nil:
-			return 0, "", fmt.Errorf("oidc: default role lookup: %w", err)
-		default:
-			if err := txExec(ctx, tx, `
-				INSERT INTO user_role (user_id, role_id, scope_card_id, granted_via)
-				VALUES (:user, :role, NULL, 'oidc') ON CONFLICT DO NOTHING
-			`, map[string]any{"user": userID, "role": roleID}); err != nil {
-				return 0, "", fmt.Errorf("oidc: apply default role: %w", err)
-			}
-			desired = append(desired, roleID)
-		}
-	}
-	// Authoritative revoke — ONLY when the OP actually sent the role claim
-	// (claims are used to map roles this login). Without the claim present
-	// the OP isn't asserting roles, so we leave existing grants untouched.
-	// With it present, drop any OIDC-granted GLOBAL role the current claims
-	// no longer justify (e.g. the user was removed from a group in the IdP).
-	// `<> ALL(:desired)` with an empty array deletes every 'oidc' global row,
-	// which is correct: claims present but nothing mapped (and no default)
-	// means no OIDC roles are justified.
-	// revokedAdmin: this sign-in just lost an IdP-granted admin role. The
-	// bootstrap below must not hand it straight back as a manual grant.
+	// revokedAdmin: this sign-in just lost an IdP-granted admin role (the
+	// reconcile below). The bootstrap must not hand it straight back as a
+	// manual grant.
 	revokedAdmin := false
-	if claimPresent(claims, v.cfg.RoleClaim) {
-		b := named.New()
-		b.Set("user_id", userID)
-		b.Set("desired", desired)
-		q, args, err := b.Compile(`
-			WITH gone AS (
-				DELETE FROM user_role
-				WHERE user_id = :user_id
-				  AND granted_via = 'oidc'
-				  AND scope_card_id IS NULL
-				  AND role_id <> ALL(:desired::bigint[])
-				RETURNING role_id
-			)
-			SELECT EXISTS (SELECT 1 FROM gone JOIN role r ON r.id = gone.role_id WHERE r.name = 'admin')
-		`)
-		if err != nil {
-			return 0, "", fmt.Errorf("oidc: reconcile roles: compile: %w", err)
+	if v.cfg.KitpRoles {
+		// kitp manages roles: the sign-in changes none, and a first sign-in
+		// with no role yet gets the default one as a kitp grant.
+		if subErr != nil {
+			if err := grantFirstSignInRole(ctx, tx, userID, v.cfg.DefaultRole); err != nil {
+				return 0, "", err
+			}
 		}
-		if err := tx.QueryRow(ctx, q, args...).Scan(&revokedAdmin); err != nil {
-			return 0, "", fmt.Errorf("oidc: reconcile roles: %w", err)
+	} else {
+		var err error
+		if revokedAdmin, err = v.applyIdPRoles(ctx, tx, userID, claims); err != nil {
+			return 0, "", err
 		}
 	}
 
@@ -1236,4 +1175,129 @@ func claimValues(c jwt.MapClaims, key string) []string {
 		return out
 	}
 	return nil
+}
+
+// applyIdPRoles grants and reconciles the roles the IdP's claims justify
+// (user_role.granted_via = 'oidc'); revokedAdmin is true when the sign-in
+// just lost an IdP-granted admin role.
+func (v *Validator) applyIdPRoles(ctx context.Context, tx pgx.Tx, userID int64, claims jwt.MapClaims) (revokedAdmin bool, err error) {
+	// Apply role mapping. The set of roles a user holds VIA OIDC
+	// (user_role.granted_via = 'oidc') is reconciled to exactly what the
+	// current claims justify: claim values are mapped to roles and granted
+	// here, and any OIDC-granted role the claims no longer justify is
+	// revoked below. Manual/admin grants (granted_via = 'manual') and
+	// project-scoped rows are never touched. Insert errors fall into three
+	// buckets:
+	//   - ErrNoRows on role_mapping lookup: that claim value just
+	//     isn't mapped, fall through to the next value.
+	//   - Real DB error on the lookup: propagate (rollback).
+	//   - Insert error: propagate.
+	values := claimValues(claims, v.cfg.RoleClaim)
+	// desired = the role_ids the current claims justify; the reconcile
+	// DELETE keeps exactly these among the user's 'oidc' global grants.
+	desired := make([]int64, 0, len(values)+1)
+	for _, val := range values {
+		var roleID int64
+		err := txScan(ctx, tx, `SELECT role_id FROM role_mapping WHERE claim_value = :value`, map[string]any{"value": val}, &roleID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("oidc: role_mapping lookup %q: %w", val, err)
+		}
+		if err := txExec(ctx, tx, `
+			INSERT INTO user_role (user_id, role_id, scope_card_id, granted_via)
+			VALUES (:user, :role, NULL, 'oidc')
+			ON CONFLICT DO NOTHING
+		`, map[string]any{"user": userID, "role": roleID}); err != nil {
+			return false, fmt.Errorf("oidc: apply role: %w", err)
+		}
+		desired = append(desired, roleID)
+	}
+	if len(desired) == 0 && v.cfg.DefaultRole != "" {
+		var roleID int64
+		err := txScan(ctx, tx, `SELECT id FROM role WHERE name = :name`, map[string]any{"name": v.cfg.DefaultRole}, &roleID)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			// Configured default_role doesn't exist in the role table —
+			// a misconfiguration, not a runtime failure. Log and move on
+			// so the user still ends up provisioned (just without a
+			// default role).
+			slog.Default().LogAttrs(ctx, slog.LevelWarn, "oidc default role not found",
+				slog.String("role", v.cfg.DefaultRole))
+		case err != nil:
+			return false, fmt.Errorf("oidc: default role lookup: %w", err)
+		default:
+			if err := txExec(ctx, tx, `
+				INSERT INTO user_role (user_id, role_id, scope_card_id, granted_via)
+				VALUES (:user, :role, NULL, 'oidc') ON CONFLICT DO NOTHING
+			`, map[string]any{"user": userID, "role": roleID}); err != nil {
+				return false, fmt.Errorf("oidc: apply default role: %w", err)
+			}
+			desired = append(desired, roleID)
+		}
+	}
+	// Authoritative revoke — ONLY when the OP actually sent the role claim
+	// (claims are used to map roles this login). Without the claim present
+	// the OP isn't asserting roles, so we leave existing grants untouched.
+	// With it present, drop any OIDC-granted GLOBAL role the current claims
+	// no longer justify (e.g. the user was removed from a group in the IdP).
+	// `<> ALL(:desired)` with an empty array deletes every 'oidc' global row,
+	// which is correct: claims present but nothing mapped (and no default)
+	// means no OIDC roles are justified.
+	if claimPresent(claims, v.cfg.RoleClaim) {
+		b := named.New()
+		b.Set("user_id", userID)
+		b.Set("desired", desired)
+		q, args, err := b.Compile(`
+			WITH gone AS (
+				DELETE FROM user_role
+				WHERE user_id = :user_id
+				  AND granted_via = 'oidc'
+				  AND scope_card_id IS NULL
+				  AND role_id <> ALL(:desired::bigint[])
+				RETURNING role_id
+			)
+			SELECT EXISTS (SELECT 1 FROM gone JOIN role r ON r.id = gone.role_id WHERE r.name = 'admin')
+		`)
+		if err != nil {
+			return false, fmt.Errorf("oidc: reconcile roles: compile: %w", err)
+		}
+		if err := tx.QueryRow(ctx, q, args...).Scan(&revokedAdmin); err != nil {
+			return false, fmt.Errorf("oidc: reconcile roles: %w", err)
+		}
+	}
+	return revokedAdmin, nil
+}
+
+// grantFirstSignInRole gives a login on its first sign-in role as a kitp
+// grant, when the login holds no role yet (an admin may have given one
+// already, to an account set up in advance). "" grants nothing.
+func grantFirstSignInRole(ctx context.Context, tx pgx.Tx, userID int64, role string) error {
+	if role == "" {
+		return nil
+	}
+	if err := txExec(ctx, tx, `
+		INSERT INTO user_role (user_id, role_id, scope_card_id, granted_via)
+		SELECT :user, r.id, NULL, 'manual' FROM role r
+		WHERE r.name = :role
+		  AND NOT EXISTS (SELECT 1 FROM user_role ur WHERE ur.user_id = :user)
+		ON CONFLICT DO NOTHING
+	`, map[string]any{"user": userID, "role": role}); err != nil {
+		return fmt.Errorf("oidc: first sign-in role: %w", err)
+	}
+	return nil
+}
+
+// AdoptIdPRoles makes every role an earlier sign-in brought from the IdP
+// (granted_via 'oidc') a kitp grant, for OIDC_ROLE_CLAIM=none: kitp manages
+// roles from then on, and nobody loses access by the switch. Returns how
+// many it changed. A role is held once per user and scope whatever its
+// provenance, so the update can't collide.
+func AdoptIdPRoles(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
+	tag, err := pool.Exec(ctx, `UPDATE user_role SET granted_via = 'manual' WHERE granted_via = 'oidc'`)
+	if err != nil {
+		return 0, fmt.Errorf("oidc: adopt IdP roles: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }

@@ -181,8 +181,8 @@ client, or set it for a confidential client (recommended — see
 | OIDC_POST_LOGOUT_REDIRECT_URI | (origin of OIDC_REDIRECT_URI) | Where the OP returns the browser after unified (RP-initiated) logout. Must be registered with the OP. |
 | OIDC_AUDIENCE | (OIDC_CLIENT_ID) | Expected ID-token audience. Unset, the `aud` claim is checked against OIDC_CLIENT_ID. |
 | OIDC_SCOPES | openid profile email | Requested scopes. |
-| OIDC_ROLE_CLAIM | groups | Token claim whose values map to roles via the role_mapping table (see Authentication & authorization). |
-| OIDC_DEFAULT_ROLE | worker | Role granted when no claim value maps; set it empty (or to `none`) to grant nothing. |
+| OIDC_ROLE_CLAIM | groups | Token claim whose values map to roles via the role_mapping table (see Authentication & authorization). `none`: kitp manages every role and the IdP only signs people in — sign-in grants and removes nothing, role mappings are ignored, and the first boot with it makes the roles earlier sign-ins brought kitp's. |
+| OIDC_DEFAULT_ROLE | worker | Role granted when no claim value maps; set it empty (or to `none`) to grant nothing. With `OIDC_ROLE_CLAIM=none`, given once, as a kitp grant, to a login's first sign-in when it has no role yet. |
 | OIDC_REQUIRED_CLAIMS | (unset) | Comma list of key=value claim requirements. |
 | KITP_OIDC_TRUST_UNVERIFIED_EMAIL | (unset) | Which email claims link a sign-in to an account or person kitp has. Unset: any the IdP doesn't mark `email_verified: false` (Entra ID and other corporate IdPs send no verification claim). `0`: only ones marked verified — for an IdP whose users can set their own address, or Entra ID with other tenants signing in. `1`: every one. Any other value refuses startup. |
 
@@ -357,7 +357,11 @@ just-in-time:
   `email_verified: false` is cleared from the login that holds it.
 - **Role mapping.** Each value of the `OIDC_ROLE_CLAIM` claim (default
   `groups`) is looked up in the `role_mapping` table (`claim_value → role`)
-  and granted globally. Manage mappings in the admin UI or via the
+  and granted globally. An IdP that leaves the claim out (Entra ID does
+  for someone with no app roles) changes no roles at that sign-in. With
+  `OIDC_ROLE_CLAIM=none` kitp manages roles itself: admins grant them in
+  kitp, and someone who leaves is blocked in the IdP and revoked in kitp
+  (People → revoke login), which ends their sessions and tokens at once. Manage mappings in the admin UI or via the
   `role_mapping.set` / `role_mapping.delete` / `role_mapping.list` API. The
   dev seed maps `kitp.admin → admin`, `kitp.manager → manager`,
   `kitp.worker → worker`.

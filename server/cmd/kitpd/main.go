@@ -466,6 +466,19 @@ func runHTTP() error {
 		if _, err := oidc.ParseEmailTrust(os.Getenv("KITP_OIDC_TRUST_UNVERIFIED_EMAIL")); err != nil {
 			return err
 		}
+		if oidcCfg.KitpRoles {
+			// OIDC_ROLE_CLAIM=none: kitp manages roles. The roles earlier
+			// sign-ins brought from the IdP become kitp's, so the switch
+			// takes nobody's access away.
+			n, err := oidc.AdoptIdPRoles(ctx, pgPool)
+			if err != nil {
+				return err
+			}
+			if n > 0 {
+				slog.Default().LogAttrs(ctx, slog.LevelInfo, "OIDC_ROLE_CLAIM=none: roles from the identity provider are now managed in kitp",
+					slog.Int64("grants", n))
+			}
+		}
 		oidcValidator = oidc.NewValidator(oidcCfg, pgPool)
 	}
 	// EndSession hook for /auth/logout: fires only in OIDC mode, and only

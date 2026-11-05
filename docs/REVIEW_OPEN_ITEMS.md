@@ -20,15 +20,22 @@ still open, and what a deployment of those commits needs to know.
   the first boot after one holds its locks for as long as it takes.
   Production (2026-11-05: 791 cards, 7,387 activity rows, 90 MB) takes
   well under a second for 0015–0040.
-- **Roles from the identity provider are reconciled only at sign-in.**
-  Someone the IdP removes keeps their OIDC-granted roles in kitp until
-  they sign in again. Their sessions end within
-  `KITP_SESSION_ABSOLUTE_DAYS` (default 45), but their own API tokens and
-  their agents' keep working with those roles until the tokens expire:
-  at most `KITP_TOKEN_MAX_DAYS` (default 365) for tokens minted now, never
-  for tokens minted before the cap without an expiry. Leavers are revoked
-  in kitp (People → revoke login), which ends their sessions and tokens at
-  once.
+- **Roles from the identity provider are reconciled only at sign-in,**
+  and only when the ID token carries the role claim: Entra ID leaves
+  `roles` out for someone with no app roles, so taking away their last
+  one changes nothing in kitp. Someone the IdP removes keeps their roles
+  until then; their sessions end within `KITP_SESSION_ABSOLUTE_DAYS`
+  (default 45), and their API tokens keep working until they expire. With
+  `OIDC_ROLE_CLAIM=none` (production's choice, 2026-11-05) kitp manages
+  roles and none of this applies; leavers are blocked in the IdP and
+  revoked in kitp (People → revoke login), which ends their sessions and
+  tokens at once.
+- **kitp doesn't hear of a sign-out or block at the IdP.** It uses only
+  RP-initiated logout (its Sign out also signs out of the IdP). It keeps no
+  refresh token and implements neither front- nor back-channel logout, so
+  "Revoke sessions" in Entra ID, or a disabled account, leaves a kitp
+  session running until it is idle 7 days (`KITP_SESSION_IDLE_HOURS`) or
+  45 days old. Revoke the login in kitp to end it.
 - **One IMAP poll can still create up to 2,500 people** (50 messages × 50
   addresses), on threads with room; a thread with 100 recipients adds
   nobody.
@@ -65,6 +72,11 @@ still open, and what a deployment of those commits needs to know.
   account an admin set up, never signed in, and the login its person
   made). The new default doesn't merge them; give the signed-in login the
   set-up account's roles and remove the set-up one.
+- **Roles: set `OIDC_ROLE_CLAIM=none`** to have kitp manage them. The
+  first boot with it makes the 19 grants earlier Entra ID sign-ins brought
+  kitp's (logged), so nobody loses access; the 3 role mappings are then
+  ignored. Entra app-role assignment still decides who may sign in if the
+  enterprise app has "Assignment required" on.
 - **The ID token's `aud` is checked against `OIDC_CLIENT_ID`** when
   `OIDC_AUDIENCE` is unset.
 - **Tokens expire.** New tokens default to 365 days and can't be set
