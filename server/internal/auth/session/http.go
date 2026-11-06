@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -41,6 +43,12 @@ type HTTPConfig struct {
 	// InsecureCookie disables the Secure cookie attribute. Set when
 	// running over plain http://localhost in dev.
 	InsecureCookie bool
+	// DevLoginHosts are the host names (no port) dev-login answers on
+	// besides localhost, *.localhost and the loopback addresses: the hosts
+	// of KITP_PUBLIC_URL and KITP_TRUSTED_ORIGINS. Any other Host is
+	// refused, so a page that rebinds its own name to a developer's
+	// 127.0.0.1 can't mint itself a System session (review 2026-11-06 L9).
+	DevLoginHosts []string
 	// EndSession, when non-nil (OIDC mode), supplies the OP's
 	// RP-initiated logout URL so /auth/logout can perform a unified
 	// logout (end the IdP session too). nil in AUTH_MODE=off.
@@ -179,7 +187,10 @@ func handleMe(ctx context.Context, w http.ResponseWriter, r *http.Request, cfg H
 	return nil
 }
 
-func handleDevLogin(ctx context.Context, w http.ResponseWriter, _ *http.Request, cfg HTTPConfig) error {
+func handleDevLogin(ctx context.Context, w http.ResponseWriter, r *http.Request, cfg HTTPConfig) error {
+	if !devHostOK(r.Host, cfg.DevLoginHosts) {
+		return api.Forbidden("dev-login answers on localhost, or a host in KITP_PUBLIC_URL / KITP_TRUSTED_ORIGINS")
+	}
 	id, err := cfg.Manager.Create(ctx, cfg.SystemUserID, "")
 	if err != nil {
 		return api.Internal(err)
@@ -301,4 +312,26 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+// devHostOK: host (a request's Host, port and all) is one dev-login answers
+// on — localhost, *.localhost, a loopback address, or one of extra.
+func devHostOK(host string, extra []string) bool {
+	h := host
+	if hh, _, err := net.SplitHostPort(host); err == nil {
+		h = hh
+	}
+	h = strings.ToLower(strings.TrimSuffix(strings.Trim(h, "[]"), "."))
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return true
+	}
+	if ip := net.ParseIP(h); ip != nil && ip.IsLoopback() {
+		return true
+	}
+	for _, e := range extra {
+		if strings.EqualFold(h, e) {
+			return true
+		}
+	}
+	return false
 }

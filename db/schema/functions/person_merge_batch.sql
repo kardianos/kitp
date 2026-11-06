@@ -138,6 +138,16 @@ BEGIN
             UPDATE user_account_person SET person_card_id = _survivor
             WHERE person_card_id = ANY(_losers);
             _moved_login := FOUND;
+            -- The login's email is the survivor's primary now: the
+            -- survivor's was typed by whoever edited the contact, and the
+            -- user's mail, digests and notifications go to the primary
+            -- (review 2026-11-06 L1).
+            IF _moved_login THEN
+                PERFORM person_email_take_primary(_survivor,
+                    (SELECT ua.email FROM user_account ua JOIN user_account_person uap ON uap.user_account_id = ua.id
+                     WHERE uap.person_card_id = _survivor LIMIT 1),
+                    actor_id);
+            END IF;
         END IF;
 
         -- Backfill the survivor's email when blank, from the first loser with one.

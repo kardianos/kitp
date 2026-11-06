@@ -453,7 +453,11 @@ func (v *Validator) lookupKey(ctx context.Context, kid string) (*rsa.PublicKey, 
 	done := make(chan struct{})
 	v.jwksFetching = done
 	v.mu.Unlock()
-	err := v.refreshJWKS(ctx)
+	// The fetch outlives the caller: it counts as the try, and others wait
+	// on it, so a client that hangs up — on the logout routes, anyone —
+	// mustn't cancel it and leave everyone without the keys for
+	// jwksMissRefresh (review 2026-11-06 #4). v.client's timeout bounds it.
+	err := v.refreshJWKS(context.WithoutCancel(ctx))
 	v.mu.Lock()
 	v.jwksFetching = nil
 	v.mu.Unlock()
@@ -771,12 +775,22 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 			return 0, "", fmt.Errorf("oidc: email-fallback lookup: %w", preErr)
 		}
 		if preErr == nil {
-			if uErr := txExec(ctx, tx, `
+			// Only while it is still unclaimed: two first sign-ins with
+			// one email at the same moment both found it, and the second
+			// overwrote the first's subject (review 2026-11-06 L14). The
+			// one that loses fails; signing in again finds its own way.
+			var got int64
+			uErr := txScan(ctx, tx, `
 				UPDATE user_account
 				SET oidc_sub = :sub,
 				    display_name = CASE WHEN coalesce(display_name, '') = '' THEN :name ELSE display_name END
-				WHERE id = :user
-			`, map[string]any{"sub": sub, "name": displayName, "user": preID}); uErr != nil {
+				WHERE id = :user AND oidc_sub IS NULL
+				RETURNING id
+			`, map[string]any{"sub": sub, "name": displayName, "user": preID}, &got)
+			if errors.Is(uErr, pgx.ErrNoRows) {
+				return 0, "", errors.New("oidc: the account was claimed by another sign-in at the same moment; sign in again")
+			}
+			if uErr != nil {
 				return 0, "", fmt.Errorf("oidc: attach sub to pre-created: %w", uErr)
 			}
 			userID = preID

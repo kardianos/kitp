@@ -68,6 +68,7 @@ test('addressNote and accountMailLabel', () => {
   assert.equal(M.addressNote({ email: 'a@x', source: 'added', verified: true, primary: false }, false), 'Added by them');
   assert.equal(M.addressNote({ email: 'a@x', source: 'added', verified: false, primary: false }), 'Waiting for its code');
   assert.equal(M.addressNote({ email: 'a@x', source: 'card', verified: true, primary: true }), '');
+  assert.equal(M.addressNote({ email: 'a@x', source: 'card', verified: false, primary: true }), 'Not verified');
   assert.equal(M.accountMailLabel({ id: '1', name: 'Support', project: 'Ops', fromAddress: 'help@x' }), 'Support (Ops) — help@x');
   assert.equal(M.accountMailLabel({ id: '1', name: '', project: '', fromAddress: 'help@x' }), 'help@x — help@x');
 });

@@ -313,7 +313,7 @@ never carries a token (server-side BFF session model).
 | GET `/api/v1/auth/oidc/callback` | public | OIDC redirect target: exchanges the code, provisions + role-maps the user, mints the session, then redirects to the saved destination. OIDC mode only. |
 | GET `/api/v1/auth/oidc/frontchannel-logout` | public | **Front-channel logout** (see below): the IdP's sign-out page loads it in an iframe with `sid` (and `iss`); ends the kitp sessions of that IdP session. OIDC mode only. |
 | POST `/api/v1/auth/oidc/backchannel-logout` | public | **Back-channel logout** (see below): the IdP POSTs a signed `logout_token`; ends the kitp sessions it names. OIDC mode only. |
-| POST `/api/v1/auth/dev-login` | public | Mints a System-user session. **`AUTH_MODE=off` only** (not registered in OIDC mode). |
+| POST `/api/v1/auth/dev-login` | public | Mints a System-user session. **`AUTH_MODE=off` only** (not registered in OIDC mode), and only on localhost, a loopback address, or a host of `KITP_PUBLIC_URL` / `KITP_TRUSTED_ORIGINS` (a page that rebinds its name to 127.0.0.1 can't use it). |
 | POST `/api/v1/auth/dev-impersonate` | authed | Swaps the session to one of the caller's own agents. **`AUTH_MODE=off` only.** |
 
 ### Unified logout

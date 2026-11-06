@@ -12,6 +12,8 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -178,8 +180,8 @@ type signIn struct {
 	state, nonce string
 }
 
-// startSignIn runs handleStart (which writes the oidc_state row carrying
-// the validated redirect and sets the state cookie).
+// startSignIn runs handleStart (which seals the validated redirect into the
+// state cookie it sets).
 func startSignIn(t *testing.T, schema, startRedirect string) *signIn {
 	t.Helper()
 	op := newCallbackFakeOP(t)
@@ -239,17 +241,15 @@ func (si *signIn) callback(withCookie bool) *httptest.ResponseRecorder {
 }
 
 // runStartCallback signs in end to end and returns the post-login
-// Location header and the redirect value persisted in the state row.
+// Location header and the redirect value sealed in the state cookie.
 func runStartCallback(t *testing.T, startRedirect string) (location, storedRedirect string) {
 	t.Helper()
 	si := startSignIn(t, "kitp_test_oidc_cb", startRedirect)
-	// Verify the redirect was stored on the state row (before the
-	// callback deletes it).
-	if err := si.pool.QueryRow(context.Background(),
-		`SELECT redirect FROM oidc_state WHERE state = $1`, si.state,
-	).Scan(&storedRedirect); err != nil {
-		t.Fatalf("read stored redirect: %v", err)
+	st, err := openState(si.cfg, si.state, si.start.Result().Cookies()[0].Value, time.Now())
+	if err != nil {
+		t.Fatalf("open the state cookie: %v", err)
 	}
+	storedRedirect = st.Redirect
 	rec := si.callback(true)
 	if rec.Code != http.StatusFound {
 		t.Fatalf("callback status = %d (body=%q), want 302", rec.Code, rec.Body.String())
@@ -290,7 +290,7 @@ func TestCallbackChecksNonce(t *testing.T) {
 func TestCallbackRedirectThreading(t *testing.T) {
 	loc, stored := runStartCallback(t, "/x")
 	if stored != "/x" {
-		t.Errorf("state row redirect = %q, want /x", stored)
+		t.Errorf("sealed redirect = %q, want /x", stored)
 	}
 	if loc != "/x" {
 		t.Errorf("callback Location = %q, want /x", loc)
@@ -318,5 +318,64 @@ func TestCallbackRedirectDefaultsToRoot(t *testing.T) {
 	}
 	if loc != "/" {
 		t.Errorf("callback Location = %q, want /", loc)
+	}
+}
+
+// TestStartWritesNoRowAndTheCookieIsSealed (review 2026-11-06 #3): a start
+// writes nothing to the database — so there is no overall budget for
+// anyone to spend — and the callback takes only a cookie kitp sealed for
+// that state, unexpired.
+func TestStartWritesNoRowAndTheCookieIsSealed(t *testing.T) {
+	si := startSignIn(t, "kitp_test_oidc_sealed", "/x")
+	var rows int
+	if err := si.pool.QueryRow(context.Background(), `SELECT count(*) FROM oidc_state`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Errorf("a start wrote %d oidc_state rows", rows)
+	}
+	c := si.start.Result().Cookies()[0]
+	if strings.Contains(c.Value, si.state) || strings.Contains(c.Value, "/x") {
+		t.Errorf("the state cookie isn't sealed: %q", c.Value)
+	}
+	if _, err := openState(si.cfg, si.state, c.Value, time.Now()); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := openState(si.cfg, "another-state", c.Value, time.Now()); err == nil {
+		t.Error("the cookie opened for another sign-in's state")
+	}
+	raw := []byte(c.Value)
+	raw[len(raw)-3] ^= 1
+	if _, err := openState(si.cfg, si.state, string(raw), time.Now()); err == nil {
+		t.Error("a tampered cookie opened")
+	}
+	other := si.cfg
+	other.StateKey = []byte("another kitpd's key")
+	if _, err := openState(other, si.state, c.Value, time.Now()); err == nil {
+		t.Error("the cookie opened under another key")
+	}
+	if _, err := openState(si.cfg, si.state, c.Value, time.Now().Add(11*time.Minute)); !errors.Is(err, errStateExpired) {
+		t.Errorf("past its life: %v, want errStateExpired", err)
+	}
+	if got := safeLocalRedirect("/" + strings.Repeat("a", maxRedirectLen)); got != "/" {
+		t.Errorf("an over-long redirect kept: %d bytes", len(got))
+	}
+}
+
+// TestStartsHaveNoOverallBudget (review 2026-11-06 #3): many addresses
+// starting at once don't use up anyone else's start.
+func TestStartsHaveNoOverallBudget(t *testing.T) {
+	g := newStartGate(nil)
+	for i := 0; i < 3000; i++ {
+		r := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oidc/start", nil)
+		r.RemoteAddr = fmt.Sprintf("[2001:db8:%x::1]:4000", i)
+		if !g.allow(r) {
+			t.Fatalf("start from address %d refused", i)
+		}
+	}
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oidc/start", nil)
+	r.RemoteAddr = "198.51.100.21:4000"
+	if !g.allow(r) {
+		t.Error("a new address was refused after many others started")
 	}
 }

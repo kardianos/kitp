@@ -6,9 +6,10 @@
 //   GET /api/v1/auth/oidc/start
 //       1. Validate the caller's `redirect` deep link (safeLocalRedirect).
 //       2. Generate a PKCE pair, an opaque state and a nonce.
-//       3. Stash (state -> verifier, redirect, nonce) in the oidc_state
-//          table with a 10-minute expiry, and set a cookie carrying the
-//          state on this browser.
+//       3. Seal (state, verifier, redirect, nonce, expiry) into a cookie
+//          on this browser (AES-GCM under a server key; sealState), with
+//          a 10-minute life. Nothing is written to the database, so a
+//          start costs kitp no row (review 2026-11-06 #3).
 //       4. 302 to the OP's authorization endpoint with PKCE +
 //          state + nonce + scope.
 //
@@ -16,8 +17,8 @@
 //       1. Require the state cookie this browser got at start: a
 //          callback URL from someone else's sign-in (login CSRF — signing
 //          the victim in as the attacker) has no matching cookie.
-//       2. Look up the verifier + redirect + nonce by state (delete the
-//          row on read).
+//       2. Open it (openState): the verifier + redirect + nonce, if it is
+//          this state's and unexpired; the cookie is cleared.
 //       3. POST the code + verifier to the OP's token endpoint.
 //       4. Verify the returned id_token, require its nonce to be the one
 //          sent at start (no replayed or injected token), then
@@ -35,6 +36,9 @@ package oidc
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -51,14 +55,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth/session"
-	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/netx"
 )
 
@@ -94,47 +96,139 @@ type BFFConfig struct {
 	// starting a sign-in, for the per-address limit on starts. nil: the
 	// TCP peer.
 	Trusted *netx.Trusted
+	// StateKey seals the sign-in state cookie (sealState). main.go passes
+	// KITP_LINK_SECRET (or its per-process key); empty: a random key made
+	// once per process, so a sign-in in flight across a restart starts
+	// again.
+	StateKey []byte
 }
 
-// Sign-in starts are limited (review 2026-11-03 round 5 #7): each writes
-// an oidc_state row, which lives until the reaper (ReapState) removes it
-// after it expires, so an unauthenticated loop on the start URL filled the
-// table. 20 a minute per address (bursts of 40) is far more than a person
-// signing in needs; 1,200 a minute across all addresses bounds the table
-// at about 24,000 live rows (StateTTL plus the reap interval).
+// maxRedirectLen caps the deep link a sign-in returns to.
+const maxRedirectLen = 2048
+
+// signInState is what a sign-in start keeps for its callback, sealed in
+// the state cookie.
+type signInState struct {
+	State    string `json:"s"`
+	Verifier string `json:"v"`
+	Nonce    string `json:"n"`
+	Redirect string `json:"r"`
+	Expires  int64  `json:"e"` // unix seconds
+}
+
+// processStateKey is the sealing key when BFFConfig.StateKey is empty.
+var processStateKey = func() []byte {
+	k := make([]byte, 32)
+	if _, err := rand.Read(k); err != nil {
+		panic(fmt.Sprintf("oidc: state key: %v", err)) // crypto/rand doesn't fail on supported platforms
+	}
+	return k
+}()
+
+// stateAEAD is AES-256-GCM under a key derived from cfg.StateKey (its own
+// purpose, so the link secret's other uses can't be confused with it).
+func stateAEAD(cfg BFFConfig) (cipher.AEAD, error) {
+	base := cfg.StateKey
+	if len(base) == 0 {
+		base = processStateKey
+	}
+	mac := hmac.New(sha256.New, base)
+	mac.Write([]byte("kitp oidc sign-in state v1"))
+	block, err := aes.NewCipher(mac.Sum(nil))
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
+
+// sealState is the state cookie's value: nonce ‖ AES-GCM(st), the cookie's
+// name as additional data, base64url.
+func sealState(cfg BFFConfig, st signInState) (string, error) {
+	aead, err := stateAEAD(cfg)
+	if err != nil {
+		return "", err
+	}
+	plain, err := json.Marshal(st)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	out := aead.Seal(nonce, nonce, plain, []byte(stateCookieName(st.State)))
+	return base64.RawURLEncoding.EncodeToString(out), nil
+}
+
+// errStateExpired: the cookie is this sign-in's, but too old.
+var errStateExpired = errors.New("oidc: sign-in state expired")
+
+// openState opens a state cookie for state: an error when it isn't one
+// kitp sealed for this state (another browser's, tampered, another key's),
+// errStateExpired when it is past its life.
+func openState(cfg BFFConfig, state, value string, now time.Time) (signInState, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return signInState{}, fmt.Errorf("oidc: state cookie: %w", err)
+	}
+	aead, err := stateAEAD(cfg)
+	if err != nil {
+		return signInState{}, err
+	}
+	if len(raw) < aead.NonceSize() {
+		return signInState{}, errors.New("oidc: state cookie too short")
+	}
+	plain, err := aead.Open(nil, raw[:aead.NonceSize()], raw[aead.NonceSize():], []byte(stateCookieName(state)))
+	if err != nil {
+		return signInState{}, fmt.Errorf("oidc: state cookie: %w", err)
+	}
+	var st signInState
+	if err := json.Unmarshal(plain, &st); err != nil {
+		return signInState{}, fmt.Errorf("oidc: state cookie: %w", err)
+	}
+	if subtle.ConstantTimeCompare([]byte(st.State), []byte(state)) != 1 {
+		return signInState{}, errors.New("oidc: state cookie is another sign-in's")
+	}
+	if now.Unix() >= st.Expires {
+		return signInState{}, errStateExpired
+	}
+	return st, nil
+}
+
+// Sign-in starts are limited per address: 20 a minute (bursts of 40) is
+// far more than a person signing in needs. A start writes nothing to the
+// database (the state is sealed in a cookie), so there is no overall
+// budget: one that every address shared let anyone — a page whose
+// visitors' browsers each load the start URL, or a handful of addresses —
+// stop every new sign-in (review 2026-11-06 #3; it bounded the oidc_state
+// rows starts used to write, round 5 #7).
 const (
 	startsPerAddressPerMinute = 20
 	startsPerAddressBurst     = 40
-	startsPerMinute           = 1200
-	startsBurst               = 2400
 )
 
-// startGate holds the sign-in start limits.
+// startGate holds the sign-in start limit.
 type startGate struct {
-	perAddress, overall *netx.Limiter
-	trusted             *netx.Trusted
+	perAddress *netx.Limiter
+	trusted    *netx.Trusted
 }
 
 func newStartGate(trusted *netx.Trusted) *startGate {
 	return &startGate{
 		perAddress: netx.NewLimiter(startsPerAddressPerMinute, startsPerAddressBurst, 10000),
-		overall:    netx.NewLimiter(startsPerMinute, startsBurst, 1),
 		trusted:    trusted,
 	}
 }
 
-// allow takes one start from the caller's address and from the overall
-// budget; false when either is spent.
+// allow takes one start from the caller's address; false when it is spent.
 func (g *startGate) allow(r *http.Request) bool {
-	return g.perAddress.Allow(netx.SourceKey(netx.ClientIP(r, g.trusted)), 1) && g.overall.Allow("*", 1)
+	return g.perAddress.Allow(netx.SourceKey(netx.ClientIP(r, g.trusted)), 1)
 }
 
-// ReapState deletes expired sign-in state rows (a sign-in abandoned at the
-// identity provider, or a start nobody followed). The callback deletes the
-// row it uses; nothing else removed the rest (round 5 #7). Run on the job
-// scheduler (oidc.state_reap).
-// It also deletes back-channel logout token ids past their window
-// (oidc_logout_jti).
+// ReapState deletes expired sign-in state rows — starts no longer write
+// them (the state is sealed in its cookie), so these are what an older
+// kitpd left — and back-channel logout token ids past their window
+// (oidc_logout_jti). Run on the job scheduler (oidc.state_reap).
 func ReapState(ctx context.Context, pool *pgxpool.Pool) error {
 	if _, err := pool.Exec(ctx, `DELETE FROM oidc_state WHERE expires_at < now()`); err != nil {
 		return fmt.Errorf("oidc: reap state: %w", err)
@@ -244,20 +338,12 @@ func handleStart(w http.ResponseWriter, r *http.Request, cfg BFFConfig) {
 	// open-redirect can't be smuggled through the state row.
 	redirect := safeLocalRedirect(r.URL.Query().Get("redirect"))
 
-	b := named.New()
-	b.Set("state", state)
-	b.Set("verifier", verifier)
-	b.Set("redirect", redirect)
-	b.Set("nonce", nonce)
-	b.Set("ttl", int(cfg.StateTTL.Seconds()))
-	sql, args, err := b.Compile(`
-		INSERT INTO oidc_state (state, verifier, redirect, nonce, expires_at)
-		VALUES (:state, :verifier, :redirect, :nonce, now() + :ttl * INTERVAL '1 second')`)
-	if err == nil {
-		_, err = cfg.Pool.Exec(r.Context(), sql, args...)
-	}
+	sealed, err := sealState(cfg, signInState{
+		State: state, Verifier: verifier, Nonce: nonce, Redirect: redirect,
+		Expires: time.Now().Add(cfg.StateTTL).Unix(),
+	})
 	if err != nil {
-		logRedirect(r, "oidc.start: state_insert", err)
+		logRedirect(r, "oidc.start: seal_state", err)
 		redirectLogin(w, r, "could not start sign-in")
 		return
 	}
@@ -265,7 +351,7 @@ func handleStart(w http.ResponseWriter, r *http.Request, cfg BFFConfig) {
 	// which Lax cookies ride; a cross-site subrequest or POST doesn't.
 	http.SetCookie(w, &http.Cookie{
 		Name:     stateCookieName(state),
-		Value:    state,
+		Value:    sealed,
 		Path:     stateCookiePath(cfg),
 		MaxAge:   int(cfg.StateTTL.Seconds()),
 		HttpOnly: true,
@@ -304,11 +390,20 @@ func handleCallback(w http.ResponseWriter, r *http.Request, cfg BFFConfig) {
 		return
 	}
 
-	// The browser that started this sign-in holds a cookie with its state;
-	// one handed someone else's callback URL doesn't (review B8). The row
-	// stays, so the real browser can still finish.
+	// The browser that started this sign-in holds the cookie sealed for
+	// its state; one handed someone else's callback URL doesn't (review
+	// B8), and its own cookie is left alone so it can still finish.
 	c, err := r.Cookie(stateCookieName(state))
-	if err != nil || subtle.ConstantTimeCompare([]byte(c.Value), []byte(state)) != 1 {
+	if err != nil {
+		redirectLogin(w, r, "this sign-in was started in another browser or tab; start again here")
+		return
+	}
+	st, err := openState(cfg, state, c.Value, time.Now())
+	if errors.Is(err, errStateExpired) {
+		redirectLogin(w, r, "state expired")
+		return
+	}
+	if err != nil {
 		redirectLogin(w, r, "this sign-in was started in another browser or tab; start again here")
 		return
 	}
@@ -316,27 +411,7 @@ func handleCallback(w http.ResponseWriter, r *http.Request, cfg BFFConfig) {
 		Name: stateCookieName(state), Value: "", Path: stateCookiePath(cfg), MaxAge: -1,
 		HttpOnly: true, Secure: !cfg.InsecureCookie, SameSite: http.SameSiteLaxMode,
 	})
-
-	var verifier, redirect, nonce string
-	b := named.New()
-	b.Set("state", state)
-	sql, args, err := b.Compile(`
-		DELETE FROM oidc_state WHERE state = :state AND expires_at > now()
-		RETURNING verifier, redirect, nonce`)
-	if err != nil {
-		logRedirect(r, "oidc.callback: state_lookup", err)
-		redirectLogin(w, r, "could not complete sign-in")
-		return
-	}
-	if err := cfg.Pool.QueryRow(r.Context(), sql, args...).Scan(&verifier, &redirect, &nonce); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			redirectLogin(w, r, "state expired")
-			return
-		}
-		logRedirect(r, "oidc.callback: state_lookup", err)
-		redirectLogin(w, r, "could not complete sign-in")
-		return
-	}
+	verifier, redirect, nonce := st.Verifier, st.Redirect, st.Nonce
 
 	tokenURL, err := cfg.Validator.TokenEndpoint(r.Context())
 	if err != nil {
@@ -433,7 +508,9 @@ func handleCallback(w http.ResponseWriter, r *http.Request, cfg BFFConfig) {
 //
 // Anything else — including the empty string — collapses to "/".
 func safeLocalRedirect(raw string) string {
-	if raw == "" || raw[0] != '/' {
+	// It rides in the state cookie; a cookie has about 4 KB (review
+	// 2026-11-06 #3).
+	if raw == "" || raw[0] != '/' || len(raw) > maxRedirectLen {
 		return "/"
 	}
 	if strings.HasPrefix(raw, "//") || strings.ContainsRune(raw, '\\') {

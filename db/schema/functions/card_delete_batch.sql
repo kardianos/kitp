@@ -135,6 +135,11 @@ BEGIN
         VALUES (_card_id, 'card_delete', actor_id)
         RETURNING id INTO _activity_id;
 
+        -- 4b. A deleted person's addresses go: kept, nobody could add them
+        --     again and mail from them filed as the deleted person (review
+        --     2026-11-06 L11). The card keeps its email.
+        DELETE FROM person_email WHERE person_card_id = _card_id;
+
         -- 5. A deleted page leaves every portal, and so does every page
         --    under a deleted card (a project, a parent page): the build and
         --    the serving paths skip pages under a deleted card (review

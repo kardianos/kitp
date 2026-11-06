@@ -101,12 +101,13 @@ func upsertPersonByEmail(
 	lb.Set("email_def", emailADID)
 	lb.Set("person_type", personCTID)
 	lb.Set("email", trimmed)
-	// A person's other verified addresses (person_email) match too, after
-	// the primary: mail from someone's second address files as them
-	// (docs/EMAIL_ADDRESSES.md).
+	// A person's verified addresses (person_email) match too, and first:
+	// mail from someone's second address files as them
+	// (docs/EMAIL_ADDRESSES.md), even when a contact was made with it
+	// (review 2026-11-06 L2).
 	lq, largs, err := lb.Compile(`
 		SELECT m.id FROM (
-		    SELECT av.card_id AS id, 0 AS pref
+		    SELECT av.card_id AS id, 1 AS pref
 		    FROM attribute_value av
 		    JOIN card c ON c.id = av.card_id
 		    WHERE av.attribute_def_id = :email_def
@@ -114,7 +115,7 @@ func upsertPersonByEmail(
 		      AND c.deleted_at IS NULL
 		      AND lower(av.value #>> '{}') = lower(:email)
 		    UNION ALL
-		    SELECT pe.person_card_id, 1
+		    SELECT pe.person_card_id, 0
 		    FROM person_email pe
 		    JOIN card c ON c.id = pe.person_card_id AND c.deleted_at IS NULL
 		    WHERE pe.email = lower(:email) AND pe.verified_at IS NOT NULL

@@ -182,8 +182,18 @@ func TestAddVerifyChoosePrimary(t *testing.T) {
 	if c := code(call(t, f, f.ada, "person_email", "remove", map[string]any{"email": "ada@home.example"})); c != "primary" {
 		t.Errorf("removing the primary: %q, want primary", c)
 	}
-	if c := code(call(t, f, f.bob, "person_email", "add", map[string]any{"email": "ada@home.example"})); c != "in_use" {
-		t.Errorf("Bob adding Ada's verified address: %q, want in_use", c)
+	// Bob adding Ada's verified address is answered like any address — no
+	// in_use to say whose it is — but nothing is mailed (review 2026-11-06
+	// L2). The send limit is per address, so let a minute pass first.
+	if _, err := f.sp.P.Exec(context.Background(), `UPDATE person_email_code_sent SET sent_at = sent_at - interval '2 minutes'`); err != nil {
+		t.Fatal(err)
+	}
+	before := len(sent())
+	if r := call(t, f, f.bob, "person_email", "add", map[string]any{"email": "ada@home.example"}); !r.OK {
+		t.Errorf("Bob adding Ada's verified address: %+v, want the same answer as any address", r.Error)
+	}
+	if n := len(sent()); n != before {
+		t.Errorf("a code went to Ada's address on Bob's add (%d mails, want %d)", n, before)
 	}
 	if c := code(call(t, f, f.bob, "person_email", "list", map[string]any{"person_id": fmt.Sprint(f.adaPerson)})); c != "forbidden" {
 		t.Errorf("Bob listing Ada's addresses: %q, want forbidden", c)

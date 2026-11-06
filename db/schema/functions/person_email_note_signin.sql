@@ -2,8 +2,11 @@
 -- addresses (docs/EMAIL_ADDRESSES.md): added as verified (source 'signin'),
 -- unless another person has it verified. The primary — the person card's
 -- `email`, what mail and digests use — follows it when it was the login's
--- previous email (p_old) or empty; a primary the person chose among their
--- other addresses stays. Called by the OIDC sign-in (oidc.provisionUser).
+-- previous email (p_old), empty, or isn't one of the person's verified
+-- addresses (an address typed onto the card before the login was granted,
+-- merged in, or while it was revoked; review 2026-11-06 L1); a primary
+-- the person chose among their verified addresses stays. Called by the
+-- OIDC sign-in (oidc.provisionUser).
 CREATE OR REPLACE FUNCTION person_email_note_signin(p_person bigint, p_email text, p_old text, p_actor bigint)
 RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
@@ -33,8 +36,13 @@ BEGIN
     SELECT lower(btrim(COALESCE(av.value #>> '{}', ''))) INTO _primary
     FROM attribute_value av WHERE av.card_id = p_person AND av.attribute_def_id = _def;
     _primary := COALESCE(_primary, '');
-    IF _primary = _email OR (_primary <> '' AND _primary <> _old) THEN
+    IF _primary = _email THEN
         RETURN;
+    END IF;
+    IF _primary <> '' AND _primary <> _old
+       AND EXISTS (SELECT 1 FROM person_email
+                   WHERE person_card_id = p_person AND email = _primary AND verified_at IS NOT NULL) THEN
+        RETURN; -- one the person chose
     END IF;
     INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
     VALUES (p_person, 'attr_update', _def, CASE WHEN _primary = '' THEN NULL ELSE to_jsonb(_primary) END, to_jsonb(_email), p_actor)

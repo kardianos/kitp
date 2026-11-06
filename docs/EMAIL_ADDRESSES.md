@@ -18,31 +18,47 @@ verified.
   kitp mails it a code (`person_email.add`). The code is 10 symbols,
   XXXXX-XXXXX, and works for 24 hours. Entering it verifies the address
   (`person_email.verify`). Adding a pending address again sends a new
-  code. A person has at most 20 addresses and gets at most 5 codes an hour.
-  An agent can't add addresses; its owner adds their own.
+  code. A person has at most 20 addresses. Codes are counted as they are
+  sent (`person_email_code_sent`), so removing an address doesn't reset a
+  limit: at most 5 an hour per person, and to one address at most 1 a
+  minute and 5 a day, whoever asks. kitp keeps an HMAC of the code (a key
+  derived from `KITP_COMM_SECRET_KEY`), never the code. An agent can't add
+  addresses; its owner adds their own.
 
-A verified address belongs to one person: adding or verifying one that is
-verified on someone else is refused (`in_use`), and a sign-in doesn't take
-it either.
+A verified address belongs to one person, and a sign-in doesn't take it.
+Adding one that is verified on someone else is answered like any other —
+it shows as waiting for its code — but no code goes out, so it can never be
+verified there: `add` doesn't tell whose an address is. A person's
+addresses go when the person card is deleted or the login is revoked or
+unlinked (unless another live login is the same person's); the card keeps
+its email, as a contact's.
 
 ## The primary
 
 - The person chooses it among their verified addresses
   (`person_email.set_primary`).
-- A sign-in with a new email moves the primary to it only when the primary
-  was the login's previous email (or empty). After a rename the person keeps
-  getting mail at the address the identity provider now uses, unless they
-  chose another address themselves, which stays.
+- A sign-in with a new email moves the primary to it when the primary was
+  the login's previous email, empty, or not one of the person's verified
+  addresses (typed onto the contact before the login was granted, merged
+  in, or edited while the login was revoked). After a rename the person
+  keeps getting mail at the address the identity provider now uses, unless
+  they chose another verified address themselves, which stays.
+- `person.grant_account` makes the login's email the primary. A primary
+  that is only on the card is listed as not verified (`source: card`).
 - The primary can't be removed while it is the primary; choose another first.
 - `attribute.update` doesn't write a user's `email`: it is theirs to choose.
   A contact's email (a person without a login) stays ordinary card data.
 
 ## Mail from any verified address
 
-Incoming mail is matched to a person by any of their verified addresses, the
-primary first (`comm.upsertPersonByEmail`, `person.upsert_by_email`). Mail
-from someone's old or second address files as them instead of making a new
-contact. An address still waiting for its code matches nobody.
+Incoming mail is matched to a person by their verified addresses first,
+then by any person card's email (`comm.upsertPersonByEmail`,
+`person.upsert_by_email`). Mail from someone's old or second address files
+as them instead of making a new contact, even when a contact with that
+address exists. An address still waiting for its code matches nobody.
+`person.upsert_by_email` matches verified addresses only for a workspace
+admin (intake files as System): a project's worker would otherwise learn
+whose an address is.
 
 ## The mail account that sends codes
 
@@ -51,6 +67,9 @@ account (a `comm_channel`) of some project. An admin chooses the one for
 account emails in People ("Account emails from"; `account_mail.set`), from
 the mail accounts with an outgoing server and a From address. Until one is
 chosen, adding an address isn't offered.
+
+Codes go out only while that account is enabled (`no_sender` when an admin
+paused it or kitp switched it off after failures).
 
 The code mail is marked as a notification (its Message-ID and
 `X-Kitp-Notification: verify`), so a reply to it is dropped rather than

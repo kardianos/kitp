@@ -117,6 +117,11 @@ BEGIN
         RETURNING id INTO _account_id;
         INSERT INTO user_account_person (user_account_id, person_card_id)
         VALUES (_account_id, _person_id);
+        -- The login's email is the primary from now on: the card's was
+        -- typed by whoever edited the contact, and a user's mail, digests
+        -- and notifications go to the primary (review 2026-11-06 L1). The
+        -- first sign-in puts it on the person's list, verified.
+        PERFORM person_email_take_primary(_person_id, _email, person_grant_account_batch.actor_id);
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object('user_account_id', _account_id::text);

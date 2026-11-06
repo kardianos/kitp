@@ -95,11 +95,14 @@ BEGIN
         --    this function on write, but historical rows + IMAP-sourced
         --    persons might carry mixed case — lower() on both sides
         --    keeps the join symmetric.
-        --    A person's other verified addresses (person_email) match too,
-        --    after the primary (docs/EMAIL_ADDRESSES.md).
+        --    A person's verified addresses (person_email) match too, and
+        --    first: a contact someone made with that address mustn't take
+        --    the person's mail. Only for a workspace admin (intake files as
+        --    System): a project's worker would learn whose a second address
+        --    is (review 2026-11-06 L2) — theirs matches card emails only.
         SELECT m.id INTO _existing
         FROM (
-            SELECT av.card_id AS id, 0 AS pref
+            SELECT av.card_id AS id, 1 AS pref
             FROM attribute_value av
             JOIN card c ON c.id = av.card_id
             WHERE av.attribute_def_id = _email_def
@@ -107,10 +110,11 @@ BEGIN
               AND c.deleted_at IS NULL
               AND lower(av.value #>> '{}') = _email
             UNION ALL
-            SELECT pe.person_card_id, 1
+            SELECT pe.person_card_id, 0
             FROM person_email pe
             JOIN card c ON c.id = pe.person_card_id AND c.deleted_at IS NULL
             WHERE pe.email = _email AND pe.verified_at IS NOT NULL
+              AND user_is_global_admin(person_upsert_by_email_batch.actor_id)
         ) m
         ORDER BY m.pref, m.id
         LIMIT 1;

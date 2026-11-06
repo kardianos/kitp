@@ -125,6 +125,7 @@ import (
 	domlink "github.com/kitp/kitp/server/internal/dom/link"
 	"github.com/kitp/kitp/server/internal/dom/mailin"
 	"github.com/kitp/kitp/server/internal/dom/myscreen"
+	"github.com/kitp/kitp/server/internal/dom/personemail"
 	domportal "github.com/kitp/kitp/server/internal/dom/portal"
 	"github.com/kitp/kitp/server/internal/dom/proc"
 	"github.com/kitp/kitp/server/internal/dom/process"
@@ -133,7 +134,6 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/projectstamp"
 	domrole "github.com/kitp/kitp/server/internal/dom/role"
 	"github.com/kitp/kitp/server/internal/dom/rolemapping"
-	"github.com/kitp/kitp/server/internal/dom/personemail"
 	domscheduler "github.com/kitp/kitp/server/internal/dom/scheduler"
 	"github.com/kitp/kitp/server/internal/dom/tag"
 	domuser "github.com/kitp/kitp/server/internal/dom/user"
@@ -502,6 +502,7 @@ func runHTTP() error {
 		Pool:            pgPool,
 		SystemUserID:    auth.SystemUserID,
 		DevLoginEnabled: mode == auth.ModeOff,
+		DevLoginHosts:   configuredHosts(),
 		InsecureCookie:  insecureCookie,
 		EndSession:      endSession,
 	})
@@ -800,6 +801,7 @@ func runHTTP() error {
 			SessionManager: sessionMgr,
 			InsecureCookie: insecureCookie,
 			Trusted:        trustedProxies,
+			StateKey:       linkSecret,
 		}
 		if err := bffCfg.Validate(); err != nil {
 			return fmt.Errorf("oidc/bff: %w", err)
@@ -1132,6 +1134,19 @@ func extractBearer(header string) string {
 		return ""
 	}
 	return strings.TrimSpace(header[len(prefix):])
+}
+
+// configuredHosts are the host names of KITP_PUBLIC_URL and
+// KITP_TRUSTED_ORIGINS (dev-login's other hosts; session.HTTPConfig).
+func configuredHosts() []string {
+	var out []string
+	raw := append(strings.Split(os.Getenv("KITP_TRUSTED_ORIGINS"), ","), os.Getenv("KITP_PUBLIC_URL"))
+	for _, o := range raw {
+		if u, err := url.Parse(strings.TrimSpace(o)); err == nil && u.Hostname() != "" {
+			out = append(out, u.Hostname())
+		}
+	}
+	return out
 }
 
 // newCrossOriginProtection builds the router's CSRF check (api.RouterConfig

@@ -73,6 +73,9 @@ export function registerEmailSpecs(api: Api): void {
 /** What a row says of an address, after its badges: as its owner reads it
  *  (own), or as an admin does. */
 export function addressNote(a: EmailAddress, own = true): string {
+  // A primary that is only on the person card: nobody verified it (typed
+  // before the login existed). The next sign-in replaces it.
+  if (a.source === 'card') return a.verified ? '' : 'Not verified';
   if (!a.verified) return 'Waiting for its code';
   switch (a.source) {
     case 'signin':
@@ -209,7 +212,10 @@ export class AccountEmails extends Control<AccountEmailsConfig> {
     if (a.verified && !a.primary) head.append(this.button('Make primary', () => this.write(EMAIL_SPEC.setPrimary, { email: a.email }), 'email-primary'));
     if (!a.primary) head.append(this.button('Remove', () => this.write(EMAIL_SPEC.remove, { email: a.email }), 'email-remove'));
     card.append(head);
-    if (!a.verified) {
+    if (!a.verified && a.source === 'card') {
+      // Verify it like a new address: a code goes to it.
+      head.append(this.button('Send a code', () => this.write(EMAIL_SPEC.add, { email: a.email }, `We sent a code to ${a.email}. Enter it below; it works for 24 hours.`), 'email-verify-card'));
+    } else if (!a.verified) {
       const row = el('div', 'mi-card__head');
       const code = document.createElement('input');
       code.type = 'text';

@@ -52,7 +52,9 @@ BEGIN
                                'code_expires_at', CASE WHEN pe.verified_at IS NULL THEN pe.verify_expires_at END) AS a
                     FROM person_email pe WHERE pe.person_card_id = _person
                     UNION ALL
-                    SELECT jsonb_build_object('email', _primary, 'source', 'card', 'verified', true, 'primary', true,
+                    -- On the card only: nobody verified it (typed by
+                    -- someone before the login; review 2026-11-06 L1).
+                    SELECT jsonb_build_object('email', _primary, 'source', 'card', 'verified', false, 'primary', true,
                                               'code_expires_at', NULL)
                     WHERE COALESCE(_primary, '') <> ''
                       AND NOT EXISTS (SELECT 1 FROM person_email pe WHERE pe.person_card_id = _person AND pe.email = _primary)

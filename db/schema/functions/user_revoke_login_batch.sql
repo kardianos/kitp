@@ -84,6 +84,19 @@ BEGIN
         -- person a login again — with any email — lifts the block
         -- (login_unrevoke_person), and user.restore_login can link them
         -- back (review 2026-11-03 round 4 #12).
+        -- The person's addresses go with the login: they are what its
+        -- sign-ins brought and its owner verified. Kept, nobody could add
+        -- them again — the person's next login included — and mail from
+        -- them filed as this person (review 2026-11-06 L11). The card's
+        -- email stays, as a contact's. Not while another live login is
+        -- the same person's.
+        DELETE FROM person_email pe
+        WHERE pe.person_card_id = (SELECT uap.person_card_id FROM user_account_person uap
+                                   WHERE uap.user_account_id = _user_id)
+          AND NOT EXISTS (
+              SELECT 1 FROM user_account_person o JOIN user_account ua ON ua.id = o.user_account_id
+              WHERE o.person_card_id = pe.person_card_id AND o.user_account_id <> _user_id
+                AND ua.deleted_at IS NULL AND ua.login_revoked_at IS NULL);
         UPDATE user_account
            SET login_revoked_at = now(),
                revoked_person_card_id = (SELECT uap.person_card_id FROM user_account_person uap

@@ -12,7 +12,10 @@ package personemail
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,7 +28,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/comm"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/store"
@@ -82,13 +84,44 @@ func (in AddInput) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Email    string `json:"email"`
 		CodeHash string `json:"code_hash"`
-	}{in.Email, auth.HashSecret(in.code)})
+	}{in.Email, codeHash(in.code)})
+}
+
+// codeHash is what kitp stores of a code: HMAC-SHA256 under a key derived
+// from KITP_COMM_SECRET_KEY (set in production; kitpd refuses to start
+// without it), hex. A code is only about 50 bits, so a plain SHA-256 read
+// from a backup or replica could be searched within its 24 hours (review
+// 2026-11-06 L10).
+func codeHash(code string) string {
+	key := sha256.Sum256([]byte("kitp person_email code v1\x00" + store.CommSecretKey()))
+	mac := hmac.New(sha256.New, key[:])
+	mac.Write([]byte(code))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // AddOutput reports the pending address.
 type AddOutput struct {
 	Email           string `json:"email" mcp:"desc=the address, waiting for its code"`
 	SenderChannelID int64  `json:"sender_channel_id,string" mcp:"desc=the mail account the code was sent from"`
+	// skipSend: the address is verified on someone else — the SQL answers
+	// as for any address but sends nothing, and the caller isn't told
+	// (review 2026-11-06 L2). Read from the SQL's `send`, never written.
+	skipSend bool
+}
+
+// UnmarshalJSON reads the SQL's answer, including `send`.
+func (o *AddOutput) UnmarshalJSON(b []byte) error {
+	var w struct {
+		Email           string `json:"email"`
+		SenderChannelID int64  `json:"sender_channel_id,string"`
+		Send            *bool  `json:"send"`
+	}
+	if err := json.Unmarshal(b, &w); err != nil {
+		return err
+	}
+	o.Email, o.SenderChannelID = w.Email, w.SenderChannelID
+	o.skipSend = w.Send != nil && !*w.Send
+	return nil
 }
 
 // VerifyInput is an address and the code mailed to it.
@@ -102,7 +135,7 @@ func (in VerifyInput) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Email    string `json:"email"`
 		CodeHash string `json:"code_hash"`
-	}{in.Email, auth.HashSecret(normalCode(in.Code))})
+	}{in.Email, codeHash(normalCode(in.Code))})
 }
 
 // VerifyOutput confirms a verified address.
@@ -209,9 +242,17 @@ func sendCodes(ctx context.Context, tx store.Querier, ins []any, outs []any) err
 		if !ok || !ok2 {
 			return fmt.Errorf("person_email.add: unexpected types %T, %T", ins[i], outs[i])
 		}
+		if out.skipSend {
+			continue
+		}
 		cfg, err := comm.LoadSMTPConfig(ctx, tx, out.SenderChannelID)
 		if err != nil {
 			return fmt.Errorf("person_email.add: mail account: %w", err)
+		}
+		// An admin paused it, or kitp switched it off after failures: it
+		// sends nothing, codes included (review 2026-11-06 L12).
+		if cfg.Status != comm.ChannelStatusEnabled {
+			return &reg.HandlerError{Code: "no_sender", Message: "the mail account for account emails is switched off; ask an admin", InputIndex: i}
 		}
 		if cfg.Host == "" || cfg.From == "" {
 			return &reg.HandlerError{Code: "no_sender", Message: "the mail account for account emails has no outgoing server or From address; ask an admin", InputIndex: i}

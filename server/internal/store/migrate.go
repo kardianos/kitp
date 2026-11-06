@@ -1535,6 +1535,22 @@ FROM card_type ct, attribute_def ad
 WHERE ct.name = 'reply_body' AND ad.name = 'reply_refused'
 ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;`,
 	},
+	{
+		// A person's addresses go when the person is deleted or loses its
+		// last live login (card.delete, user.revoke_login,
+		// user.unlink_person; review 2026-11-06 L11). Clear the ones
+		// already left behind — 0041 also gave revoked logins' emails to
+		// their people. Idempotent: a second run finds none.
+		id: "0043_person_email_orphans",
+		sql: `
+DELETE FROM person_email pe
+WHERE EXISTS (SELECT 1 FROM card c WHERE c.id = pe.person_card_id AND c.deleted_at IS NOT NULL)
+   OR NOT EXISTS (
+        SELECT 1 FROM user_account_person uap
+        JOIN user_account ua ON ua.id = uap.user_account_id
+        WHERE uap.person_card_id = pe.person_card_id
+          AND ua.deleted_at IS NULL AND ua.login_revoked_at IS NULL);`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that
