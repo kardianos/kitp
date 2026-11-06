@@ -488,8 +488,12 @@ func (s *Server) unbornAnchor(ctx context.Context, h reg.Handler, input any, loo
 // made it in between, or an earlier sub-request of this batch did — either
 // way no grant was checked for it (review 2026-11-06 #1). A card still
 // missing is the handler's to report (task_not_found, link_not_found…).
-// The check runs just before the handler's statement, so the window left is
-// that of one statement, not of a whole batch.
+// It runs twice per group: just before the handler's statement, and right
+// after it, before any PostRun — a group's inputs are handled in one
+// statement whose later reads see cards committed while it ran, or made by
+// the group's own earlier inputs, so only the second look closes the window
+// (review 2026-11-06 round 8 #1). Either finding fails the batch, which
+// rolls the write back.
 func checkUnborn(ctx context.Context, tx store.Querier, group []prepared) error {
 	var ids []int64
 	for _, p := range group {

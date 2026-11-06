@@ -10,7 +10,13 @@
 --      that surface — both cases emit 'not_found' so existing
 --      callers (and the integration test in attachment_test.go) keep
 --      working unchanged.
---   3. Soft delete: SET deleted_at = now(), write a matching
+--   3. Grant: card.update on the attachment's card, in its project, as the
+--      dispatcher's gate does — checked here too, because the gate runs
+--      before the request transaction and an attachment id that has no
+--      row then (the next one in the sequence) gives it no card to check
+--      (review 2026-11-06 round 8 #4). Someone else's private card and a
+--      card in an off area are refused the same way.
+--   4. Soft delete: SET deleted_at = now(), write a matching
 --      activity row of kind='attachment_delete' carrying the
 --      attachment_id / file_id / filename in value_old.
 --
@@ -32,6 +38,8 @@ DECLARE
     _id bigint;
     _exists boolean;
     _already_deleted boolean;
+    _card bigint;
+    _type text;
     _ignored bigint;
 BEGIN
     FOR _idx, _id IN
@@ -44,14 +52,23 @@ BEGIN
                 'attachment.delete: id is required'::text, NULL::jsonb;
             CONTINUE;
         END IF;
-        SELECT true, (a.deleted_at IS NOT NULL)
-        INTO _exists, _already_deleted
+        SELECT true, (a.deleted_at IS NOT NULL), a.card_id, ct.name
+        INTO _exists, _already_deleted, _card, _type
         FROM attachment a
+        JOIN card c ON c.id = a.card_id
+        JOIN card_type ct ON ct.id = c.card_type_id
         WHERE a.id = _id;
         IF NOT FOUND OR _already_deleted THEN
             RETURN QUERY SELECT _idx, false, 'not_found'::text,
                 'attachment.delete: attachment not found or already deleted'::text,
                 NULL::jsonb;
+            CONTINUE;
+        END IF;
+        IF NOT user_has_grant(attachment_delete_batch.actor_id, _type, 'card.update', card_enclosing_project(_card))
+           OR NOT card_private_ok(_card, attachment_delete_batch.actor_id)
+           OR card_in_off_area(_card) THEN
+            RETURN QUERY SELECT _idx, false, 'unauthorized'::text,
+                'attachment.delete: you may not change that card'::text, NULL::jsonb;
             CONTINUE;
         END IF;
         WITH upd AS (

@@ -17,12 +17,15 @@
 --   3. Return {id, mode, filename, mime_type, size_bytes}. PostRun
 --      appends 'url' and 'expires_at'.
 --
--- Authz is NOT enforced here. attachment.download_url is registered
--- with AllowedRoles worker/manager/admin + ProcessName card.update and
--- a CardTypeID/ScopeCardID resolver pair (cardTypeFromDownloadURLInput
--- / scopeCardFromDownloadURLInput), so the dispatcher's pre-tx scope
--- pass runs the same card.update-on-project gate requireAttachmentAccess
--- applies to the streaming routes — see DI-5 / DI-6. The signature the
+-- Authz: attachment.download_url is registered with AllowedRoles
+-- worker/manager/admin + ProcessName card.update and a
+-- CardTypeID/ScopeCardID resolver pair (cardTypeFromDownloadURLInput /
+-- scopeCardFromDownloadURLInput), so the dispatcher's pre-tx scope pass
+-- runs the same card.update-on-project gate requireAttachmentAccess
+-- applies to the streaming routes — see DI-5 / DI-6. That pass runs
+-- before the request transaction, and an attachment id with no row then
+-- (the next one in the sequence) gives it no card to check, so the grant
+-- is asked again here (review 2026-11-06 round 8 #4). The signature the
 -- PostRun mints then becomes the capability the public /dl route trusts.
 CREATE OR REPLACE FUNCTION attachment_download_url_batch(
     actor_id bigint,
@@ -41,6 +44,8 @@ DECLARE
     _filename text;
     _mime text;
     _size bigint;
+    _card bigint;
+    _type text;
 BEGIN
     FOR _idx, _id, _mode IN
         SELECT (r.ord - 1)::int,
@@ -61,14 +66,14 @@ BEGIN
         END IF;
 
         IF _mode = 'thumb' THEN
-            SELECT f.filename, f.mime_type, f.size_bytes
-            INTO _filename, _mime, _size
+            SELECT f.filename, f.mime_type, f.size_bytes, a.card_id
+            INTO _filename, _mime, _size, _card
             FROM attachment a
             JOIN file f ON f.id = a.thumb_file_id
             WHERE a.id = _id AND a.deleted_at IS NULL;
         ELSE
-            SELECT f.filename, f.mime_type, f.size_bytes
-            INTO _filename, _mime, _size
+            SELECT f.filename, f.mime_type, f.size_bytes, a.card_id
+            INTO _filename, _mime, _size, _card
             FROM attachment a
             JOIN file f ON f.id = a.file_id
             WHERE a.id = _id AND a.deleted_at IS NULL;
@@ -78,6 +83,16 @@ BEGIN
             RETURN QUERY SELECT _idx, false, 'not_found'::text,
                 'attachment.download_url: attachment not found, deleted, or has no thumbnail'::text,
                 NULL::jsonb;
+            CONTINUE;
+        END IF;
+        SELECT ct.name INTO _type
+        FROM card c JOIN card_type ct ON ct.id = c.card_type_id
+        WHERE c.id = _card;
+        IF NOT user_has_grant(attachment_download_url_batch.actor_id, _type, 'card.update', card_enclosing_project(_card))
+           OR NOT card_private_ok(_card, attachment_download_url_batch.actor_id)
+           OR card_in_off_area(_card) THEN
+            RETURN QUERY SELECT _idx, false, 'unauthorized'::text,
+                'attachment.download_url: you may not open that card''s files'::text, NULL::jsonb;
             CONTINUE;
         END IF;
 

@@ -144,6 +144,15 @@ func (s *Server) runSQLFunc(ctx context.Context, tx store.Querier, group []prepa
 			s.Pool.NoteWrite()
 		}
 	}
+	// The statement read on snapshots taken while it ran, so an input aimed
+	// at an id that had no card at authz saw a card committed meanwhile —
+	// by someone else, or by an earlier input of this group — and wrote it
+	// with no grant checked. Such a card is visible now: look again before
+	// any PostRun side effect (mail), and fail the batch (review 2026-11-06
+	// round 8 #1).
+	if err := checkUnborn(ctx, tx, group); err != nil {
+		return nil, err
+	}
 	if h.PostRun != nil {
 		// Same tx, same ctx; PostRun may mutate `outs` in place
 		// (e.g. attachment.create fills in thumb_file_id after the

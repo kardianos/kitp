@@ -656,6 +656,11 @@ func (s *Server) Dispatch(ctx context.Context, req BatchRequest) BatchResponse {
 			outs, err = s.runSQLFunc(runCtx, tx, group, ins)
 		} else {
 			outs, err = group[0].Handler.Run(runCtx, tx, ins)
+			if err == nil {
+				// As runSQLFunc does after its statement: a card made
+				// while the group ran, at an id it aimed at unchecked.
+				err = checkUnborn(runCtx, tx, group)
+			}
 		}
 		runCancel()
 		if err != nil {
