@@ -184,7 +184,7 @@ idx_card_parent_card_id, "parent_card_id",
 idx_card_card_type_id, "card_type_id",
 idx_card_private_to, "private_to", "private_to IS NOT NULL"
 
-## table activity | doc="Append-only stream of card events: card_create, attr_update, tag_apply, comment, ... actor_admin, on a row setting a person's email, says whether its actor was a workspace admin then (activity_set_actor_admin); NULL elsewhere and on older rows."
+## table activity | doc="Append-only stream of card events: card_create, attr_update, tag_apply, comment, ... actor_admin, on a row setting a person's email, says whether its actor was a workspace admin then (activity_set_actor_admin); NULL elsewhere and on older rows. txid is the writing transaction's id (NULL on rows from before it was recorded, read as 0): a row's id is taken when it is inserted but it is seen when its transaction commits, so a reader that follows the stream (the activity-sink pump) reads in (txid, id) order, only rows whose transaction is older than every one still running."
 
 ### columns
 name, type, pk, nullable, default, references
@@ -197,11 +197,13 @@ value_new, jsonb, , , ,
 actor_id, bigint, , false, , user_account.id
 created_at, timestamptz, , false, now(), 
 actor_admin, boolean, , , , 
+txid, xid8, , , pg_current_xact_id(), 
 
 ### indexes
-name, columns
-idx_activity_card_id_created_at, "card_id, created_at"
-idx_activity_created_at, "created_at"
+name, columns, expressions
+idx_activity_card_id_created_at, "card_id, created_at", 
+idx_activity_created_at, "created_at", 
+idx_activity_txid_id, , "(COALESCE(txid, '0'::xid8)), id"
 
 ## table attribute_value | doc="Current value of one attribute on one card. last_activity_id points at the activity row that set this value. value_type_id denormalizes the def's storage class onto the row (<50 = scalar, 50 = card_ref[], >=1000 = plain text; av_value_type_id) so the value indexes can partition by class without a join: scalars get the (attribute_def_id, value) btree for equality (a query reaches it only with the guard value_type_id < 50), card_ref[] lists are matched by containment (attribute_value_refs GIN) and text values get the trigram; both are kept OUT of the btree, whose entries stop at 2704 bytes. Set by the attribute_value_set_type_id trigger from attribute_def.value_type, which is immutable." | primary_key="card_id, attribute_def_id"
 
@@ -648,12 +650,13 @@ client_secret, bytea, , , , ,
 updated_at, timestamptz, , false, now(), ,
 
 
-## table activity_sink_state | doc="Per-delivery-unit high-water mark + last-error + rollup clock for the activity pump. A delivery unit is either a broadcast activity_sink (msgraph_teams) or a personal activity_subscription under an email sink; sink_card_id holds that unit's card id. Separated from the card's attributes so the pointer can advance every push without writing a fresh attr_update activity row (which would re-enter the activity stream and cause feedback). last_activity_id is the largest activity.id this unit has consumed; the pump scans WHERE id > last_activity_id. pending_since is the created_at of the oldest matched-but-undelivered activity row: the unit holds delivery until pending_since + rollup_minutes, then sends everything matched so far as one digest and clears it."
+## table activity_sink_state | doc="Per-delivery-unit high-water mark + last-error + rollup clock for the activity pump. A delivery unit is either a broadcast activity_sink (msgraph_teams) or a personal activity_subscription under an email sink; sink_card_id holds that unit's card id. Separated from the card's attributes so the pointer can advance every push without writing a fresh attr_update activity row (which would re-enter the activity stream and cause feedback). The position is (last_txid, last_activity_id): the pump reads activity rows in (txid, id) order past it, and only rows whose transaction finished before every one still running, so a transaction that commits after a later one isn't skipped (review 2026-11-06 round 8 #10). last_txid NULL (a unit from before) reads as 0, which every older activity row (txid NULL) shares. pending_since is the created_at of the oldest matched-but-undelivered activity row: the unit holds delivery until pending_since + rollup_minutes, then sends everything matched so far as one digest and clears it."
 
 ### columns
 name, type, pk, nullable, default, references, on_delete
 sink_card_id, bigint, true, , , card.id, cascade
 last_activity_id, bigint, , false, 0, ,
+last_txid, xid8, , , , ,
 last_pushed_at, timestamptz, , , , ,
 last_pushed_count, bigint, , false, 0, ,
 last_error, text, , , , ,

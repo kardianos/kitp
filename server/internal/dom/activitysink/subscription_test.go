@@ -548,8 +548,8 @@ func TestTeamsSinkPostsOneDigestPerTick(t *testing.T) {
 	teamsID := seedSink(t, f.sinkFixture, `{"op":"kind_in","values":["comment"]}`)
 	// Start the Teams sink at the present so the fixture's history is skipped.
 	if _, err := f.sp.P.Exec(context.Background(), `
-		INSERT INTO activity_sink_state (sink_card_id, last_activity_id)
-		VALUES ($1, (SELECT max(id) FROM activity))`, teamsID); err != nil {
+		INSERT INTO activity_sink_state (sink_card_id, last_txid, last_activity_id)
+		VALUES ($1, pg_current_xact_id(), (SELECT max(id) FROM activity))`, teamsID); err != nil {
 		t.Fatal(err)
 	}
 	a := f.newTask(t, "Task A", 0)

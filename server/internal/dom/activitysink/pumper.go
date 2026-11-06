@@ -15,12 +15,17 @@
 //  1. Gates on status: the sink (and, for a subscription, the
 //     subscription and the comm channel) must be 'enabled'. A paused
 //     unit holds its position — nothing is skipped, it resumes later.
-//  2. Loads its activity_sink_state row: last_activity_id (position) and
-//     pending_since (the rollup clock). While a clock is running and
-//     pending_since + rollup_minutes is still in the future it does
-//     nothing else.
-//  3. Scans the project's activity rows past the position (id order,
-//     capped at batchLimit).
+//  2. Loads its activity_sink_state row: (last_txid, last_activity_id)
+//     (position) and pending_since (the rollup clock). While a clock is
+//     running and pending_since + rollup_minutes is still in the future it
+//     does nothing else.
+//  3. Scans the project's activity rows past the position, in (txid, id)
+//     order, capped at batchLimit, and only rows whose transaction
+//     finished before every one still running. An id is taken when a row
+//     is inserted but the row is seen when its transaction commits: read
+//     in id order, a transaction that committed after a later one had its
+//     rows skipped for good (review 2026-11-06 round 8 #10). Every row of
+//     a finished transaction is there to read, and none can come after.
 //  4. Filters: the event filter (activity_filter — sink ceiling AND
 //     subscription), then the card filter (`predicate` — the screen
 //     filter tree compiled to SQL, sink ceiling AND subscription, '@me'
@@ -241,17 +246,21 @@ func (p *Pumper) RunOnce(ctx context.Context) error {
 		return nil // rollup window still open
 	}
 
-	rows, err := p.loadActivityBatch(ctx, st.pointer)
+	horizon, err := p.horizon(ctx)
+	if err != nil {
+		return fmt.Errorf("activity_sink pumper: horizon: %w", err)
+	}
+	rows, err := p.loadActivityBatch(ctx, st.pos, horizon)
 	if err != nil {
 		return fmt.Errorf("activity_sink pumper: load activity: %w", err)
 	}
 	if len(rows) == 0 {
 		if st.pendingSince != nil {
-			return p.recordState(ctx, st.pointer, nil, 0, "")
+			return p.recordState(ctx, st.pos, nil, 0, "")
 		}
 		return nil
 	}
-	lastScanned := rows[len(rows)-1].ID
+	lastScanned := rows[len(rows)-1].position()
 
 	if p.personal() {
 		visible, err := p.subscriberSeesProject(ctx, cfg.subscriberUserID)
@@ -289,7 +298,7 @@ func (p *Pumper) RunOnce(ctx context.Context) error {
 		// Start (or keep) the clock; park just before the first match so
 		// the delivery tick rescans from it.
 		since := first.CreatedAt
-		return p.recordState(ctx, first.ID-1, &since, 0, "")
+		return p.recordState(ctx, position{txid: first.Txid, id: first.ID - 1}, &since, 0, "")
 	}
 
 	digest, err := p.buildDigest(ctx, cfg, matched)
@@ -306,7 +315,7 @@ func (p *Pumper) RunOnce(ctx context.Context) error {
 		case errors.As(err, &graphPerm):
 			p.markFault(ctx, deliveryErrorText(err))
 		}
-		if writeErr := p.recordState(ctx, st.pointer, &since, 0, deliveryErrorText(err)); writeErr != nil {
+		if writeErr := p.recordState(ctx, st.pos, &since, 0, deliveryErrorText(err)); writeErr != nil {
 			p.logger.LogAttrs(ctx, slog.LevelError, "activity_sink state write failed",
 				slog.Int64("unit_id", p.unitID),
 				slog.String("err", writeErr.Error()))
@@ -584,8 +593,16 @@ func (p *Pumper) subscriberSeesProject(ctx context.Context, userID int64) (bool,
 
 // ---- state ----
 
+// position is where a unit has read the activity stream to, in (txid,
+// id) order: txid is the writing transaction's id (0 for rows from before
+// it was recorded, and for a unit that hasn't read any since).
+type position struct {
+	txid int64
+	id   int64
+}
+
 type unitState struct {
-	pointer      int64
+	pos          position
 	pendingSince *time.Time
 }
 
@@ -593,14 +610,14 @@ func (p *Pumper) loadState(ctx context.Context) (unitState, error) {
 	b := named.New()
 	b.Set("unit_id", p.unitID)
 	sql, args, err := b.Compile(`
-		SELECT COALESCE(last_activity_id, 0), pending_since
+		SELECT COALESCE(last_txid, '0'::xid8)::text::bigint, COALESCE(last_activity_id, 0), pending_since
 		FROM activity_sink_state WHERE sink_card_id = :unit_id
 	`)
 	if err != nil {
 		return unitState{}, fmt.Errorf("loadState: compile: %w", err)
 	}
 	var st unitState
-	if err := p.pool.P.QueryRow(ctx, sql, args...).Scan(&st.pointer, &st.pendingSince); err != nil {
+	if err := p.pool.P.QueryRow(ctx, sql, args...).Scan(&st.pos.txid, &st.pos.id, &st.pendingSince); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return unitState{}, nil
 		}
@@ -610,9 +627,9 @@ func (p *Pumper) loadState(ctx context.Context) (unitState, error) {
 }
 
 // recordState upserts the unit's position / rollup clock / counters /
-// last_error. The position only moves forward (GREATEST). last_pushed_at
-// stamps successful deliveries only.
-func (p *Pumper) recordState(ctx context.Context, newPointer int64, pendingSince *time.Time, pushed int64, lastError string) error {
+// last_error. The position only moves forward. last_pushed_at stamps
+// successful deliveries only.
+func (p *Pumper) recordState(ctx context.Context, pos position, pendingSince *time.Time, pushed int64, lastError string) error {
 	var lastErrArg any
 	if lastError != "" {
 		lastErrArg = lastError
@@ -623,18 +640,25 @@ func (p *Pumper) recordState(ctx context.Context, newPointer int64, pendingSince
 	}
 	b := named.New()
 	b.Set("unit_id", p.unitID)
-	b.Set("pointer", newPointer)
+	b.Set("pointer", pos.id)
+	b.Set("txid", strconv.FormatInt(pos.txid, 10))
 	b.Set("pushed", pushed)
 	b.Set("last_error", lastErrArg)
 	b.Set("pending_since", pendingArg)
 	sql, args, err := b.Compile(`
 		INSERT INTO activity_sink_state
-			(sink_card_id, last_activity_id, last_pushed_at, last_pushed_count, last_error, pending_since, updated_at)
-		VALUES (:unit_id, :pointer,
+			(sink_card_id, last_txid, last_activity_id, last_pushed_at, last_pushed_count, last_error, pending_since, updated_at)
+		VALUES (:unit_id, CAST(CAST(:txid AS text) AS xid8), :pointer,
 		        CASE WHEN CAST(:pushed AS bigint) > 0 THEN now() END,
 		        CAST(:pushed AS bigint), CAST(:last_error AS text), CAST(:pending_since AS timestamptz), now())
 		ON CONFLICT (sink_card_id) DO UPDATE SET
-			last_activity_id  = GREATEST(activity_sink_state.last_activity_id, EXCLUDED.last_activity_id),
+			-- Forward only, in (txid, id) order; both read the old row.
+			last_txid = CASE WHEN (EXCLUDED.last_txid, EXCLUDED.last_activity_id)
+			                      > (COALESCE(activity_sink_state.last_txid, '0'::xid8), activity_sink_state.last_activity_id)
+			                 THEN EXCLUDED.last_txid ELSE activity_sink_state.last_txid END,
+			last_activity_id = CASE WHEN (EXCLUDED.last_txid, EXCLUDED.last_activity_id)
+			                      > (COALESCE(activity_sink_state.last_txid, '0'::xid8), activity_sink_state.last_activity_id)
+			                 THEN EXCLUDED.last_activity_id ELSE activity_sink_state.last_activity_id END,
 			last_pushed_at    = CASE WHEN CAST(:pushed AS bigint) > 0 THEN now() ELSE activity_sink_state.last_pushed_at END,
 			last_pushed_count = activity_sink_state.last_pushed_count + CAST(:pushed AS bigint),
 			last_error        = CAST(:last_error AS text),
@@ -665,18 +689,55 @@ type scannedRow struct {
 	// its nearest task ancestor-or-self (a comm's activity groups under
 	// its task), else the card itself.
 	SubjectID int64
+	// Txid is the writing transaction's id (0 on older rows).
+	Txid int64
+}
+
+func (r scannedRow) position() position { return position{txid: r.Txid, id: r.ID} }
+
+// horizon is the oldest transaction id still running in this database
+// (or, with none running, the next one to be given out), as text: every
+// transaction below it has finished, so all its activity rows are there
+// to read, and no row can come later with a txid below it.
+//
+// It is read in a statement of its own, before the scan's: a transaction
+// running when it is read is counted, and one that finished before is
+// seen by the scan's later snapshot. Only this database's transactions
+// count (pg_snapshot_xmin is the whole cluster's, so another database's
+// long transaction would hold every digest back).
+func (p *Pumper) horizon(ctx context.Context) (string, error) {
+	var h string
+	if err := p.pool.P.QueryRow(ctx, `
+		WITH s AS MATERIALIZED (SELECT pg_current_snapshot() AS snap),
+		running AS (
+			SELECT backend_xid AS xid FROM pg_stat_activity
+			WHERE datname = current_database() AND backend_xid IS NOT NULL
+			UNION ALL
+			SELECT transaction FROM pg_prepared_xacts WHERE database = current_database()
+		)
+		SELECT COALESCE(
+		    (SELECT min(x) FROM s, pg_snapshot_xip(s.snap) AS x
+		     WHERE (x::text::numeric % 4294967296)::text::xid IN (SELECT xid FROM running)),
+		    (SELECT pg_snapshot_xmax(snap) FROM s))::text`).Scan(&h); err != nil {
+		return "", err
+	}
+	return h, nil
 }
 
 // loadActivityBatch materialises the project's card tree and scans
-// activity rows past the position, id-ascending, up to batchLimit.
+// activity rows past the position in (txid, id) order, up to batchLimit,
+// and only those of transactions below horizon: the rest wait for a later
+// tick.
 //
 // The recursive CTE caps depth at 16 (CLAUDE.md "Recursive CTE depth
 // cap", matching the dispatcher's scopeWalkDepth) so a corrupted
 // parent_card_id cycle can't pin the worker.
-func (p *Pumper) loadActivityBatch(ctx context.Context, pointer int64) ([]scannedRow, error) {
+func (p *Pumper) loadActivityBatch(ctx context.Context, pos position, horizon string) ([]scannedRow, error) {
 	b := named.New()
 	b.Set("project_id", p.projectID)
-	b.Set("pointer", pointer)
+	b.Set("pointer", pos.id)
+	b.Set("txid", strconv.FormatInt(pos.txid, 10))
+	b.Set("horizon", horizon)
 	b.Set("limit", p.batchLimit)
 	sql, args, err := b.Compile(`
 		WITH RECURSIVE project_cards(id, depth) AS (
@@ -690,19 +751,20 @@ func (p *Pumper) loadActivityBatch(ctx context.Context, pointer int64) ([]scanne
 			  AND c.private_to IS NULL
 		),
 		batch AS (
-			SELECT a.id, a.card_id, a.kind, a.attribute_def_id, a.actor_id,
+			SELECT a.id, COALESCE(a.txid, '0'::xid8) AS txid, a.card_id, a.kind, a.attribute_def_id, a.actor_id,
 			       a.created_at, a.value_old, a.value_new
 			FROM activity a
-			WHERE a.id > :pointer
+			WHERE (COALESCE(a.txid, '0'::xid8), a.id) > (CAST(CAST(:txid AS text) AS xid8), :pointer)
+			  AND COALESCE(a.txid, '0'::xid8) < CAST(CAST(:horizon AS text) AS xid8)
 			  AND a.card_id IN (SELECT id FROM project_cards)
 			  -- Nothing from an area that is switched off leaves kitp —
 			  -- including an approval vote recorded on a task while
 			  -- Approvals is off (activity_hidden).
 			  AND NOT activity_hidden(a.kind, a.card_id, a.value_new)
-			ORDER BY a.id ASC
+			ORDER BY COALESCE(a.txid, '0'::xid8), a.id
 			LIMIT :limit
 		)
-		SELECT b.id, b.card_id, b.kind,
+		SELECT b.id, b.txid::text::bigint, b.card_id, b.kind,
 		       COALESCE(ad.name, ''), COALESCE(ad.value_type, ''),
 		       b.actor_id, b.created_at, b.value_old, b.value_new,
 		       COALESCE((
@@ -714,7 +776,7 @@ func (p *Pumper) loadActivityBatch(ctx context.Context, pointer int64) ([]scanne
 		       ), b.card_id) AS subject_id
 		FROM batch b
 		LEFT JOIN attribute_def ad ON ad.id = b.attribute_def_id
-		ORDER BY b.id ASC
+		ORDER BY b.txid, b.id
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("loadActivityBatch: compile: %w", err)
@@ -727,7 +789,7 @@ func (p *Pumper) loadActivityBatch(ctx context.Context, pointer int64) ([]scanne
 	var out []scannedRow
 	for rows.Next() {
 		var r scannedRow
-		if err := rows.Scan(&r.ID, &r.CardID, &r.Kind, &r.AttributeName, &r.ValueType,
+		if err := rows.Scan(&r.ID, &r.Txid, &r.CardID, &r.Kind, &r.AttributeName, &r.ValueType,
 			&r.ActorID, &r.CreatedAt, &r.ValueOld, &r.ValueNew, &r.SubjectID); err != nil {
 			return nil, err
 		}

@@ -1596,6 +1596,11 @@ ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;`,
 // comm_imap_file_failure.path is the filing path a message failed on.
 // comm_secret.send_secret is a send method's secret; channel_can_send (a
 // SQL function, checked when it is created) reads it.
+// activity.txid is the writing transaction's id, and
+// activity_sink_state.last_txid the pump's position in it; the txid index
+// needs the column before the DDL runs. The column is added without a
+// default, so rows already there keep NULL (read as 0, "before") instead
+// of all taking this boot's transaction id, and then given its default.
 const preDDL = `ALTER TABLE IF EXISTS attribute_value ADD COLUMN IF NOT EXISTS value_type_id int;
 ALTER TABLE IF EXISTS comm_log ADD COLUMN IF NOT EXISTS route_id bigint;
 ALTER TABLE IF EXISTS role ADD COLUMN IF NOT EXISTS rank int NOT NULL DEFAULT 0;
@@ -1606,7 +1611,10 @@ ALTER TABLE IF EXISTS user_account ADD COLUMN IF NOT EXISTS revoked_person_card_
 ALTER TABLE IF EXISTS activity ADD COLUMN IF NOT EXISTS actor_admin boolean;
 ALTER TABLE IF EXISTS session ADD COLUMN IF NOT EXISTS oidc_sid text;
 ALTER TABLE IF EXISTS comm_imap_file_failure ADD COLUMN IF NOT EXISTS path text NOT NULL DEFAULT '';
-ALTER TABLE IF EXISTS comm_secret ADD COLUMN IF NOT EXISTS send_secret bytea;`
+ALTER TABLE IF EXISTS comm_secret ADD COLUMN IF NOT EXISTS send_secret bytea;
+ALTER TABLE IF EXISTS activity ADD COLUMN IF NOT EXISTS txid xid8;
+ALTER TABLE IF EXISTS activity ALTER COLUMN txid SET DEFAULT pg_current_xact_id();
+ALTER TABLE IF EXISTS activity_sink_state ADD COLUMN IF NOT EXISTS last_txid xid8;`
 
 // ledgerDDL creates the schema-version ledger. Kept here (not in the generated
 // schema) because it must exist before the generated DDL/seed is gated on it.

@@ -256,8 +256,11 @@ BEGIN
             INSERT INTO activity (card_id, kind, actor_id)
             VALUES (_sub_id, 'card_create', activity_subscription_set_batch.actor_id);
             -- Start at the present: never replay the project's history.
-            INSERT INTO activity_sink_state (sink_card_id, last_activity_id)
-            VALUES (_sub_id, (SELECT COALESCE(max(a.id), 0) FROM activity a))
+            -- The pump reads in (txid, id) order (pumper.go): this
+            -- transaction's own rows so far and every older transaction's
+            -- are behind it.
+            INSERT INTO activity_sink_state (sink_card_id, last_txid, last_activity_id)
+            VALUES (_sub_id, pg_current_xact_id(), (SELECT COALESCE(max(a.id), 0) FROM activity a))
             ON CONFLICT (sink_card_id) DO NOTHING;
             _cur_fault := '';
         ELSE
