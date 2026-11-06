@@ -11,7 +11,7 @@ New items go to the top of the list.
 ## This screen
 
 - **Your lists** (left), oldest first, with how many items each holds. Pick one to see it; **+ New list** adds one (rename it straight away).
-- **The list** (right): its **Symbol** (an emoji or any character, up to 16 — it is what you click on a task), **Name** and **Description**; **Save** keeps them, **Delete list** asks once, then removes the list (what was on it isn't touched). Deleting Stars is fine — it doesn't come back.
+- **The list** (right): its **Symbol** (pick one of the emoji under the box, or type any emoji or character, up to 16 — it is what you click on a task), **Name** and **Description**; **Save** keeps them, **Delete list** asks once, then removes the list (what was on it isn't touched). Deleting Stars is fine — it doesn't come back.
 - **What is on it**, in your order: drag a row by its handle (⋮⋮), or use ↑ / ↓, to move it; **Remove** takes it off. Each row opens its task or thread and shows its project and status. Something you can no longer see (its project was closed to you, or its area switched off) isn't listed.
 
 The page address keeps the list you picked (`/watch-lists?list=<id>`), so you can bookmark it.

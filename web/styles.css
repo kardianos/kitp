@@ -742,11 +742,75 @@ select optgroup {
 .shell__user-menu-item:hover {
   background: var(--color-surface-sunken);
 }
-/* Account profile page (#21). */
+/* Account page (#21): a menu on the left that jumps to each section and
+   links to the account's pages elsewhere, and the sections on the right. The
+   outlet scrolls (the page isn't its own scroller, so the menu can stick). */
 .account-page {
   padding: var(--space-6);
-  max-width: 72rem;
-  overflow-y: auto;
+  max-width: 84rem;
+}
+.account-page__layout {
+  display: grid;
+  grid-template-columns: 12rem minmax(0, 1fr);
+  gap: var(--space-6);
+  align-items: start;
+}
+.account-page__nav {
+  position: sticky;
+  top: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.account-page__nav-link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px var(--space-2);
+  border-radius: var(--radius-md);
+  color: var(--color-fg);
+  font-size: var(--text-sm);
+  text-decoration: none;
+}
+.account-page__nav-link:hover {
+  background: var(--color-fill-hover);
+}
+.account-page__nav-link[aria-current='true'] {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-strong);
+}
+.account-page__nav-link--away {
+  color: var(--color-muted);
+}
+.account-page__nav-link--away .icon {
+  flex: none;
+}
+.account-page__nav-rule {
+  height: 1px;
+  margin: var(--space-2) 0;
+  background: var(--color-hairline);
+}
+/* Room after the last section, so the menu's last jump (Calendars) can bring
+   it to the top of the screen rather than stopping short. */
+.account-page__content {
+  min-width: 0;
+  padding-bottom: calc(100vh - 10rem);
+  padding-bottom: calc(100dvh - 10rem);
+}
+@media (max-width: 720px) {
+  .account-page__layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .account-page__nav {
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .account-page__nav-rule {
+    width: 1px;
+    height: auto;
+    margin: 0 var(--space-1);
+  }
 }
 .account-page__title {
   margin: 0 0 var(--space-4);
@@ -772,10 +836,12 @@ select optgroup {
 .account-page__value {
   font-weight: var(--weight-medium);
 }
-/* Notifications: the caller's email subscriptions (a MasterDetail sized to a
-   fixed panel inside the scrolling page). */
 .account-page__section {
-  margin-top: var(--space-6);
+  margin-top: var(--space-8);
+  scroll-margin-top: var(--space-4);
+}
+.account-page__section:first-child {
+  margin-top: 0;
 }
 .account-page__subtitle {
   margin: 0 0 var(--space-1);
@@ -786,6 +852,8 @@ select optgroup {
   margin: 0 0 var(--space-3);
   font-size: var(--text-sm);
 }
+/* Notifications: the caller's email subscriptions (a MasterDetail sized to a
+   fixed panel inside the scrolling page). */
 .account-page__notifications {
   height: 40rem;
   border: 1px solid var(--color-border);
@@ -11522,6 +11590,44 @@ textarea.task-comms__form-input {
   font-size: 18px;
   text-align: center;
 }
+.watch-lists__symbol-pick {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+}
+/* The quick picks: rows of eight (WATCH_SYMBOLS), fewer on a narrow pane. */
+.watch-lists__symbols {
+  display: grid;
+  grid-template-columns: repeat(8, 2.25rem);
+  gap: 4px;
+}
+.watch-lists__symbol-btn {
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.watch-lists__symbol-btn:hover {
+  background: var(--color-fill-hover);
+}
+.watch-lists__symbol-btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+.watch-lists__symbol-btn[aria-pressed='true'] {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+@media (max-width: 480px) {
+  .watch-lists__symbols {
+    grid-template-columns: repeat(6, 2.25rem);
+  }
+}
 .watch-lists__error {
   grid-column: 1 / -1;
   margin: 0;
@@ -11620,10 +11726,6 @@ textarea.task-comms__form-input {
 .shell__mine-links {
   display: flex;
   flex-direction: column;
-}
-.shell__link--add {
-  color: var(--color-muted);
-  font-size: var(--text-xs);
 }
 .my-screen-page {
   display: flex;

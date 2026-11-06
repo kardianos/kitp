@@ -20,6 +20,7 @@ import { navigate, plainClick } from '../shell/router.js';
 import { icon } from '../ui/icons.js';
 import { DropPlaceholder, computeDropTarget } from '../ui/drag-placeholder.js';
 import { WATCH_SPEC, sortOrderForSlot, watchItemHref, type WatchItem, type WatchList } from './specs.js';
+import { WATCH_SYMBOLS } from './symbols.js';
 
 export interface WatchListsConfig extends BaseControlConfig {
   type: 'WatchLists';
@@ -222,6 +223,9 @@ export class WatchLists extends Control<WatchListsConfig> {
     symbol.dataset.watchSymbol = '';
     symbol.value = list.symbol;
     symbol.maxLength = 16;
+    symbol.placeholder = 'Any';
+    symbol.setAttribute('aria-label', 'Symbol');
+    const symbolPick = this.symbolPicker(symbol);
     const title = document.createElement('input');
     title.type = 'text';
     title.dataset.watchTitle = '';
@@ -298,13 +302,53 @@ export class WatchLists extends Control<WatchListsConfig> {
       actions.append(save, del);
     }
     form.append(
-      field('Symbol', symbol, 'An emoji or a character; it is what you click on a task.'),
+      field('Symbol', symbolPick, 'Pick one, or type any emoji or character; it is what you click on a task.'),
       field('Name', title),
       field('Description', desc),
       error,
       actions,
     );
     return form;
+  }
+
+  /**
+   * The Symbol field: its text box (any emoji or character) and, under it,
+   * the quick picks (WATCH_SYMBOLS). A pick fills the box; the one matching
+   * the box is marked pressed, and typing updates the mark. Save keeps it.
+   */
+  private symbolPicker(input: HTMLInputElement): HTMLElement {
+    const wrap = document.createElement('div');
+    wrap.className = 'watch-lists__symbol-pick';
+    const grid = document.createElement('div');
+    grid.className = 'watch-lists__symbols';
+    grid.setAttribute('role', 'group');
+    grid.setAttribute('aria-label', 'Pick a symbol');
+    grid.dataset.watchSymbols = '';
+    const buttons = WATCH_SYMBOLS.map((w) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'watch-lists__symbol-btn';
+      b.dataset.watchSymbolPick = w.symbol;
+      b.textContent = w.symbol;
+      b.title = w.name;
+      b.setAttribute('aria-label', w.name);
+      this.listen(b, 'click', (e) => {
+        // Inside the field's <label>: don't let the click also focus the box.
+        e.preventDefault();
+        input.value = w.symbol;
+        mark();
+      });
+      return b;
+    });
+    const mark = (): void => {
+      const v = input.value.trim();
+      for (const b of buttons) b.setAttribute('aria-pressed', String(b.dataset.watchSymbolPick === v));
+    };
+    this.listen(input, 'input', mark);
+    mark();
+    grid.append(...buttons);
+    wrap.append(input, grid);
+    return wrap;
   }
 
   private deleteList(id: string): void {

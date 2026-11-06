@@ -179,7 +179,7 @@ export {
 // Real screen controls + their registrars.
 export { Kanban, Column, TaskCard, registerKanbanControls, _resetDragState } from './kanban/kanban.js';
 export { ScreenHost, layoutToControlType, registerScreenHost } from './shell/screen-host.js';
-export { AccountPage, registerAccountPage } from './shell/account-page.js';
+export { ACCOUNT_LINKS, ACCOUNT_SECTIONS, AccountPage, registerAccountPage } from './shell/account-page.js';
 export { logout, LOGOUT_PATH } from './shell/logout.js';
 export { ScreenFilterBar, registerScreenFilterBar, focusScreenSearch } from './shell/screen-filter-bar.js';
 export { Grid, registerGrid } from './grid/grid.js';

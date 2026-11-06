@@ -213,7 +213,8 @@ export class AppShell extends Control<AppShellConfig> {
   /** The SITES rail section (portals with "Show in kitp" on). */
   private sitesSection: HTMLElement | null = null;
   private sitesHost: HTMLElement | null = null;
-  /** The rail's Mine links host (personal screens). */
+  /** The rail's Mine section (hidden with no personal screens) and its links host. */
+  private mineSection: HTMLElement | null = null;
   private mineHost: HTMLElement | null = null;
   /** Rail admin sub-sections (WORKSPACE / PROJECT): each section's chrome
    *  (heading + list) + its per-link role gates. A section shows iff ANY of its
@@ -460,15 +461,18 @@ export class AppShell extends Control<AppShellConfig> {
     rail.append(railLink('Activity', 'g a', activityUrl(), () => this.intent('goActivity')));
 
     // MINE: the account's personal screens (docs/PERSONAL_SCREENS.md), in
-    // their own order, across every project — and + New screen. Reloads when
-    // a screen is made, changed or deleted (shell.myScreensVersion).
+    // their own order, across every project. Hidden when there are none (a
+    // screen is made on My screens). Reloads when a screen is made, changed
+    // or deleted (shell.myScreensVersion).
     const mineSection = document.createElement('div');
     mineSection.className = 'shell__mine';
     mineSection.dataset.region = 'shell.mine';
+    mineSection.style.display = 'none';
     const mineHost = document.createElement('div');
     mineHost.className = 'shell__mine-links';
     mineSection.append(sectionLabel('MINE'), mineHost);
     rail.append(mineSection);
+    this.mineSection = mineSection;
     this.mineHost = mineHost;
     this.effect(() => {
       this.ctx.tree.at(['shell', 'myScreensVersion']).get();
@@ -626,7 +630,7 @@ export class AppShell extends Control<AppShellConfig> {
     const watchBtn = menuLink('Watch lists', '/watch-lists');
     watchBtn.dataset.userMenuWatch = '';
     // My screens — personal screens and views (docs/PERSONAL_SCREENS.md).
-    const myScreensBtn = menuLink('My screens', '/my-screens');
+    const myScreensBtn = menuLink('My screens', MY_SCREENS_PATH);
     myScreensBtn.dataset.userMenuMyScreens = '';
     const logoutBtn = document.createElement('button');
     logoutBtn.type = 'button';
@@ -914,15 +918,12 @@ export class AppShell extends Control<AppShellConfig> {
     }, 'shell.workspaceAreas');
   }
 
-  /**
-   * (Re)load the SITES rail links: portal.list (the portals the user can
-   * see) filtered to those shown in kitp. Called at boot, on a /site route,
-   * and on the Portals admin screen (where "Show in kitp" is switched).
-   */
-  /** The Mine section's links: your personal screens, then + New screen. */
+  /** The Mine section's links: your personal screens, in their order. The
+   *  section is hidden when you have none. */
   private loadMine(): void {
     const host = this.mineHost;
-    if (host === null) return;
+    const section = this.mineSection;
+    if (host === null || section === null) return;
     this.ctx.api.callByName(
       MY_SCREEN_SPEC.list,
       {},
@@ -935,32 +936,18 @@ export class AppShell extends Control<AppShellConfig> {
           link.dataset.myScreenLink = s.id;
           return link;
         });
-        const add = railLink('+ New screen', '', MY_SCREENS_PATH, () => this.newMyScreen());
-        add.classList.add('shell__link--add');
-        add.dataset.myScreenNew = '';
-        host.replaceChildren(...links, add);
+        host.replaceChildren(...links);
+        section.style.display = links.length === 0 ? 'none' : '';
       },
       { alive: () => this.isAlive() },
     );
   }
 
-  /** + New screen: make one (every project, active tasks) and open its
-   *  settings to name it. */
-  private newMyScreen(): void {
-    this.ctx.api.callByName(
-      MY_SCREEN_SPEC.set,
-      { title: 'New screen', layout: 'list', listCardType: 'task' },
-      (out) => {
-        if (!this.isAlive()) return;
-        const id = (out as { id: string }).id;
-        const node = this.ctx.tree.at(['shell', 'myScreensVersion']);
-        node.set((node.peek<number>() ?? 0) + 1);
-        navigate(`${myScreenUrl(id)}?settings`);
-      },
-      { alive: () => this.isAlive() },
-    );
-  }
-
+  /**
+   * (Re)load the SITES rail links: portal.list (the portals the user can
+   * see) filtered to those shown in kitp. Called at boot, on a /site route,
+   * and on the Portals admin screen (where "Show in kitp" is switched).
+   */
   private loadSites(): void {
     const host = this.sitesHost;
     const section = this.sitesSection;

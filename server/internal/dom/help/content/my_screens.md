@@ -4,9 +4,9 @@ Screens and views that are yours alone. Nobody else sees them — not your teamm
 
 ## Personal screens
 
-A personal screen lists **tasks** or **threads** across **every project you can see**, as a **list** or a **grid**. It sits in the left navigation under **Mine**, in your order.
+A personal screen lists **tasks** or **threads** across **every project you can see**, as a **list** or a **grid**. It sits in the left navigation under **Mine**, in your order; Mine shows once you have one.
 
-- **+ New screen** (under Mine, or here) makes one and opens its settings.
+- **+ New screen** (here, on My screens in your user menu) makes one and opens its settings.
 - **Screen settings** (⚙ on the screen, or **Settings** here): its **Name**, **Layout** (list or grid — not a board, whose columns are one project's statuses), what it **Lists**, and its **Projects**: *every project I can see* (the default), *only these*, or *all but these* — handy to leave out a project a screen makes no sense for. New projects join automatically under *every project* and *all but these*.
 - On the screen, the filter bar works as everywhere: phase toggles (Active is on), search, **Advanced**, sort and group. Save what you set up as a view (**View → Save current as new view…**) and make one the screen's default (**Set as default**), so the screen opens that way — e.g. *On my watch list: any of my lists*, Active.
 - ↑ / ↓ here moves a screen in Mine; **Delete screen** removes it and its views (the tasks it listed are untouched).

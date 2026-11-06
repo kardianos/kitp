@@ -546,8 +546,54 @@ test('AccountPage mounts the Notifications section with the subscriptions manage
   const page = M.Control.New('AccountPage', { type: 'AccountPage' }, { api, tree, scope: {} });
   page.mount(new FakeElement('div'));
   await settle(dispatcher);
-  const section = page.el.querySelector('[data-account-notifications]');
+  const section = page.el.querySelector('[data-account-section="notifications"]');
   assert.ok(section, 'notifications section rendered');
   assert.ok(section.querySelector('[data-control="MasterDetail"]'), 'subscriptions MasterDetail mounted');
   assert.equal(rowsOf(section).length, 2, 'the caller\'s subscriptions listed');
+});
+
+test('AccountPage: a menu that jumps to each section, and links (🔗) to the account pages elsewhere', async () => {
+  const transport = subscriptionTransport();
+  const { dispatcher, api } = boot(transport);
+  const tree = new M.TreeNode({}, []);
+  const page = M.Control.New('AccountPage', { type: 'AccountPage' }, { api, tree, scope: {} });
+  page.mount(new FakeElement('div'));
+  await settle(dispatcher);
+
+  const keys = M.ACCOUNT_SECTIONS.map((s) => s.key);
+  assert.deepEqual(keys, ['profile', 'emails', 'notifications', 'calendars']);
+  const jumps = page.el.querySelectorAll('[data-account-nav]');
+  assert.deepEqual(jumps.map((a) => a.dataset.accountNav), keys, 'a jump per section, in order');
+  const sections = page.el.querySelectorAll('[data-account-section]');
+  assert.deepEqual(sections.map((s) => s.dataset.accountSection), keys, 'the sections, in the same order');
+  for (const s of sections) assert.equal(s.id, `account-${s.dataset.accountSection}`);
+  assert.equal(page.el.querySelector('[data-account-watch-lists]'), null, 'no Watch lists stub section');
+
+  const links = page.el.querySelectorAll('[data-account-link]');
+  assert.deepEqual(
+    links.map((a) => [a.dataset.accountLink, a.href]),
+    [
+      ['watch-lists', '/watch-lists'],
+      ['my-screens', '/my-screens'],
+      ['agents', '/agents'],
+    ],
+  );
+  for (const a of links) assert.ok(a.querySelector('svg'), `${a.dataset.accountLink} has the link icon`);
+
+  // A jump scrolls its section to the top and marks itself current.
+  const calendars = sections.find((s) => s.dataset.accountSection === 'calendars');
+  const scrolled = [];
+  calendars.scrollIntoView = (opts) => scrolled.push(opts);
+  const jump = jumps.find((a) => a.dataset.accountNav === 'calendars');
+  jump.dispatchEvent({ type: 'click' });
+  assert.deepEqual(scrolled, [{ block: 'start', behavior: 'smooth' }]);
+  assert.equal(jump.getAttribute('aria-current'), 'true');
+  assert.deepEqual(
+    jumps.filter((a) => a.getAttribute('aria-current') === 'true').map((a) => a.dataset.accountNav),
+    ['calendars'],
+  );
+
+  // A link goes to its page.
+  links.find((a) => a.dataset.accountLink === 'my-screens').dispatchEvent({ type: 'click' });
+  assert.equal(globalThis.location.pathname, '/my-screens');
 });

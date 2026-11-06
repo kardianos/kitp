@@ -222,6 +222,35 @@ test('WatchLists: Remove takes an item off; Save writes the form; Delete asks on
   assert.deepEqual(calls.find((x) => x.k === 'watch_list.delete').data, { id: '10' });
 });
 
+test('WatchLists: the symbol picker — a pick fills the box and is marked; Save writes it; a typed symbol still works', async () => {
+  const { dispatcher, api } = bootApi();
+  const c = mount(api, 'WatchLists');
+  await settle(dispatcher);
+  const allPicks = () => [...c.el.querySelectorAll('[data-watch-symbol-pick]')];
+  const picks = allPicks();
+  assert.ok(picks.length >= 36, `offers at least 36 symbols (got ${picks.length})`);
+  assert.equal(new Set(picks.map((b) => b.dataset.watchSymbolPick)).size, picks.length, 'no symbol twice');
+  for (const b of picks) assert.notEqual(b.getAttribute('aria-label'), '', 'each pick is named');
+  const pressed = () => allPicks().filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.dataset.watchSymbolPick);
+  assert.deepEqual(pressed(), ['★'], "the list's own symbol is marked");
+
+  c.el.querySelector('[data-watch-symbol-pick="🚀"]').click();
+  assert.equal(c.el.querySelector('[data-watch-symbol]').value, '🚀');
+  assert.deepEqual(pressed(), ['🚀']);
+  c.el.querySelector('[data-watch-save]').click();
+  await settle(dispatcher);
+  assert.equal(calls.find((x) => x.k === 'watch_list.set').data.symbol, '🚀');
+
+  // Save reloads the lists and paints the form again: the box is a new one.
+  const box = c.el.querySelector('[data-watch-symbol]');
+  box.value = '🦄';
+  box.dispatchEvent(new globalThis.window.Event('input', { bubbles: true }));
+  assert.deepEqual(pressed(), [], 'a custom symbol marks no pick');
+  c.el.querySelector('[data-watch-save]').click();
+  await settle(dispatcher);
+  assert.equal(calls.filter((x) => x.k === 'watch_list.set').at(-1).data.symbol, '🦄');
+});
+
 test('WatchLists: an empty name is refused on the page', async () => {
   const { dispatcher, api } = bootApi();
   const c = mount(api, 'WatchLists');

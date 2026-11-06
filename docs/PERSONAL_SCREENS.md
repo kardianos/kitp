@@ -33,7 +33,7 @@ everyone in it saw them; watch lists were readable by anyone who could list
 | P8 | Project scope is part of the base filter: a new derived filter field **Project** (`attr: project`, *in* / *not in* over project ids; both compilers: `card_enclosing_project(c.id)`). No project leaf = every project you can see. |
 | P9 | A personal screen renders through the same ScreenHost, filter bar and bodies. Its rows and lookups run with no project: the host gives its children a context whose `scope` is `{projectId: null, allProjects: true}`, and the list/grid bindings skip only when both `projectId` and `allProjects` are unset (`skipWhenNull: ['projectId\|allProjects']`). No "+ New" (there's no project to put a card in). |
 | P10 | A personal view is a `filter` card with `private_to` = you, under any screen: `card.insert {…, private: true}`. **My default** is a `my_default` bool on your private view; on a shared screen it wins over the screen's `default_filter` for you. On your own screen you set the screen's `default_filter` itself. |
-| P11 | Routes: `/my/:id` (a personal screen; help topic `layout.<layout>`), `/my-screens` (the page). The rail's **Mine** section lists your screens (`my_screen.list`) with a **+ New screen** link. |
+| P11 | Routes: `/my/:id` (a personal screen; help topic `layout.<layout>`), `/my-screens` (the page). The rail's **Mine** section lists your screens (`my_screen.list`) and is hidden when you have none; you make one on **My screens** (user menu). |
 
 ## Detail
 

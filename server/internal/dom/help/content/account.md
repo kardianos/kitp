@@ -1,6 +1,6 @@
 # Your account
 
-Your profile, the email notifications you subscribe to, and your calendar feeds.
+Your profile, your email addresses, the email notifications you subscribe to, and your calendar feeds, on one page. The menu on the left jumps to each section; under it are links (🔗) to your **Watch lists**, **My screens** and **My Agents**, which have pages of their own.
 
 ## Notifications
 
