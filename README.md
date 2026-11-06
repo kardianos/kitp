@@ -240,7 +240,7 @@ See `docs/BUNDLES_AND_PORTALS.md`.
 | ATTACHMENT_CHUNK_MAX_MB | 8 | Max upload chunk size. |
 | CAS_REAPER_INTERVAL_SEC | 3600 | How often unreferenced blobs are reaped. |
 | CAS_REAPER_GRACE_SEC | 3600 | Grace period before an unreferenced blob is eligible for reaping. |
-| KITP_LINK_SECRET | (per-process key) | HMAC secret signing attachment download / upload links. Set it when running more than one instance, or for links that survive a restart; unset, a random key is made at each start. |
+| KITP_LINK_SECRET | (per-process key) | HMAC secret signing attachment download / upload links, and the key the sign-in state cookie is sealed with (a key derived from it for that purpose). Set it when running more than one instance — without it, a sign-in that starts on one and comes back to another fails ("started in another browser or tab"), about half of them with two — or for links and sign-ins in flight that survive a restart; unset, a random key is made at each start. |
 
 ### Observability
 

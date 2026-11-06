@@ -35,6 +35,7 @@
 package oidc
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -141,22 +142,44 @@ func stateAEAD(cfg BFFConfig) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
+// maxStateCookieBytes caps the state cookie's name and value: a browser
+// drops a cookie past about 4 KB, and the callback would then say the
+// sign-in started in another browser (review 2026-11-06 round 8 L10).
+const maxStateCookieBytes = 3800
+
 // sealState is the state cookie's value: nonce ‖ AES-GCM(st), the cookie's
-// name as additional data, base64url.
+// name as additional data, base64url. A deep link that would make the
+// cookie too large is dropped: the sign-in returns to "/".
 func sealState(cfg BFFConfig, st signInState) (string, error) {
+	sealed, err := sealStateOnce(cfg, st)
+	if err != nil {
+		return "", err
+	}
+	if len(stateCookieName(st.State))+1+len(sealed) > maxStateCookieBytes && st.Redirect != "/" {
+		st.Redirect = "/"
+		return sealStateOnce(cfg, st)
+	}
+	return sealed, nil
+}
+
+func sealStateOnce(cfg BFFConfig, st signInState) (string, error) {
 	aead, err := stateAEAD(cfg)
 	if err != nil {
 		return "", err
 	}
-	plain, err := json.Marshal(st)
-	if err != nil {
+	// Not json.Marshal: it writes each '&', '<' and '>' as \u00XX, six
+	// bytes for one, and a deep link's query is full of '&'.
+	var plain bytes.Buffer
+	enc := json.NewEncoder(&plain)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(st); err != nil {
 		return "", err
 	}
 	nonce := make([]byte, aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
 		return "", err
 	}
-	out := aead.Seal(nonce, nonce, plain, []byte(stateCookieName(st.State)))
+	out := aead.Seal(nonce, nonce, plain.Bytes(), []byte(stateCookieName(st.State)))
 	return base64.RawURLEncoding.EncodeToString(out), nil
 }
 

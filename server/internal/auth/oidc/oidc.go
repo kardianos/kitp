@@ -413,18 +413,24 @@ func (v *Validator) parseAndVerify(ctx context.Context, raw string) (*jwt.Token,
 	return tok, nil
 }
 
-// lookupKey returns the RSA public key for kid, refreshing JWKS on miss.
+// lookupKey returns the RSA public key for kid, refreshing JWKS on miss
+// and once the set is older than jwksTTL.
+//
+// A key kitp holds stays good while the set is refreshed, while the last
+// try is recent (jwksMissRefresh), and when the refresh fails — the IdP's
+// keys endpoint down or slow mustn't refuse every sign-in and logout
+// token signed with a key kitp already has (review 2026-11-06 round 8
+// L11) — for up to jwksMaxStale past its fetch. A refresh that works and
+// no longer lists the key ends it.
 func (v *Validator) lookupKey(ctx context.Context, kid string) (*rsa.PublicKey, error) {
 	v.mu.RLock()
-	if key, ok := v.jwksKeys[kid]; ok {
-		expired := time.Since(v.jwksFetchedAt) >= v.jwksTTL
-		v.mu.RUnlock()
-		if !expired {
-			return key, nil
-		}
-	} else {
-		v.mu.RUnlock()
+	held, known := v.jwksKeys[kid]
+	age := time.Since(v.jwksFetchedAt)
+	v.mu.RUnlock()
+	if known && age < v.jwksTTL {
+		return held, nil
 	}
+	usable := known && age < v.jwksTTL+jwksMaxStale
 	// An unknown kid refetches the keys at most every jwksMissRefresh: a
 	// token naming made-up kids — on a bearer request, or the logout routes,
 	// which take no credential — would otherwise have kitp fetch the IdP's
@@ -435,9 +441,11 @@ func (v *Validator) lookupKey(ctx context.Context, kid string) (*rsa.PublicKey, 
 	// A caller that finds a fetch under way waits for it (the first
 	// requests after a restart all need the keys).
 	v.mu.Lock()
-	_, known := v.jwksKeys[kid]
 	if wait := v.jwksFetching; wait != nil {
 		v.mu.Unlock()
+		if usable {
+			return held, nil
+		}
 		select {
 		case <-wait:
 		case <-ctx.Done():
@@ -445,8 +453,11 @@ func (v *Validator) lookupKey(ctx context.Context, kid string) (*rsa.PublicKey, 
 		}
 		return v.knownKey(kid)
 	}
-	if !known && !v.jwksTriedAt.IsZero() && time.Since(v.jwksTriedAt) < jwksMissRefresh {
+	if !v.jwksTriedAt.IsZero() && time.Since(v.jwksTriedAt) < jwksMissRefresh {
 		v.mu.Unlock()
+		if usable {
+			return held, nil
+		}
 		return nil, fmt.Errorf("oidc: no key for kid=%s", kid)
 	}
 	v.jwksTriedAt = time.Now()
@@ -463,6 +474,9 @@ func (v *Validator) lookupKey(ctx context.Context, kid string) (*rsa.PublicKey, 
 	v.mu.Unlock()
 	close(done)
 	if err != nil {
+		if usable {
+			return held, nil
+		}
 		return nil, err
 	}
 	return v.knownKey(kid)
@@ -478,9 +492,13 @@ func (v *Validator) knownKey(kid string) (*rsa.PublicKey, error) {
 	return nil, fmt.Errorf("oidc: no key for kid=%s", kid)
 }
 
-// jwksMissRefresh is how soon after a JWKS fetch an unknown kid may fetch
-// it again (lookupKey).
+// jwksMissRefresh is how soon after a JWKS fetch an unknown kid — or a
+// held key past jwksTTL — may fetch it again (lookupKey).
 const jwksMissRefresh = 30 * time.Second
+
+// jwksMaxStale is how long past jwksTTL a held key stays good while the
+// keys can't be fetched again.
+const jwksMaxStale = 24 * time.Hour
 
 // AuthorizationEndpoint returns the OP's authorize URL. May trigger a
 // discovery fetch on first call. Used by the BFF /oidc/start handler.
@@ -556,7 +574,10 @@ func (v *Validator) ensureDiscovery(ctx context.Context) error {
 // refreshJWKS re-fetches discovery + JWKS. Called on first use, on TTL
 // expiry, and on kid miss.
 func (v *Validator) refreshJWKS(ctx context.Context) error {
-	if v.disco == nil {
+	v.mu.RLock()
+	haveDisco := v.disco != nil
+	v.mu.RUnlock()
+	if !haveDisco {
 		req, err := http.NewRequestWithContext(ctx, "GET",
 			strings.TrimRight(v.cfg.Issuer, "/")+"/.well-known/openid-configuration", nil)
 		if err != nil {
