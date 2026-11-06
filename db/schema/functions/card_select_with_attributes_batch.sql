@@ -130,17 +130,24 @@ BEGIN
         -- Visibility predicate (B7). A private card (c.private_to,
         -- docs/PERSONAL_SCREENS.md) is its person's alone; every other card
         -- takes the role walk.
+        -- Without deleted cards, the same walk also checks that no card
+        -- above is deleted (card_under_deleted's rule, folded in as the off
+        -- areas are into VisibilityClause: a second walk per row doubled
+        -- the list's cost; review 2026-11-06 round 8 L13).
         _clauses := array_append(_clauses, format(
             '(CASE WHEN c.private_to IS NOT NULL THEN COALESCE(c.private_to = account_person($2), false) ELSE ' ||
-            'EXISTS (WITH RECURSIVE up(id, parent_card_id, card_type_id, depth) AS (' ||
-            'SELECT card.id, card.parent_card_id, card.card_type_id, 0 ' ||
+            'EXISTS (WITH RECURSIVE up(id, parent_card_id, card_type_id, deleted_at, depth) AS (' ||
+            'SELECT card.id, card.parent_card_id, card.card_type_id, card.deleted_at, 0 ' ||
             'FROM card WHERE card.id = c.id ' ||
             'UNION ALL ' ||
-            'SELECT p.id, p.parent_card_id, p.card_type_id, up.depth + 1 ' ||
+            'SELECT p.id, p.parent_card_id, p.card_type_id, p.deleted_at, up.depth + 1 ' ||
             'FROM card p JOIN up ON p.id = up.parent_card_id WHERE up.depth < 16 ' ||
             ') SELECT 1 FROM user_account caller ' ||
             'CROSS JOIN LATERAL user_role_visible(caller.id) ur ' ||
-            'WHERE caller.id = $2 AND (ur.scope_card_id IS NULL OR ur.scope_card_id IN (' ||
+            'WHERE caller.id = $2 ' ||
+            CASE WHEN _include_deleted THEN ''
+                 ELSE 'AND NOT EXISTS (SELECT 1 FROM up d WHERE d.depth > 0 AND d.deleted_at IS NOT NULL) ' END ||
+            'AND (ur.scope_card_id IS NULL OR ur.scope_card_id IN (' ||
             'SELECT up.id FROM up JOIN card_type ct2 ON ct2.id = up.card_type_id WHERE ct2.name = ''project''))) END)'
         ));
         -- Areas: a card in an area that is switched off is hidden from
@@ -150,8 +157,14 @@ BEGIN
         IF NOT _include_deleted THEN
             _clauses := array_append(_clauses, 'c.deleted_at IS NULL');
             -- What is under a deleted card goes with it (a thread on a
-            -- deleted task, a task in a deleted project).
-            _clauses := array_append(_clauses, 'NOT card_under_deleted(c.id)');
+            -- deleted task, a task in a deleted project). The walk above
+            -- covers a shared card with a parent; a card with no parent has
+            -- nothing above it unless it is a message (its thread); a
+            -- private card takes the other branch, so card_under_deleted.
+            _clauses := array_append(_clauses,
+                '((c.parent_card_id IS NULL AND c.card_type_id <> (SELECT rt.id FROM card_type rt WHERE rt.name = ''reply_body'')) ' ||
+                'OR (c.private_to IS NULL AND c.parent_card_id IS NOT NULL) ' ||
+                'OR NOT card_under_deleted(c.id))');
         END IF;
 
         IF _ids IS NOT NULL THEN

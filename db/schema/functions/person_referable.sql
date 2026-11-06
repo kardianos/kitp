@@ -32,20 +32,36 @@ BEGIN
     ) THEN
         RETURN true;
     END IF;
+    -- Two lookups, one per storage class, so each reaches its index: a
+    -- card_ref is a scalar (the (attribute_def_id, value) btree, behind the
+    -- value_type_id < 50 guard), a card_ref[] a list (the attribute_value_refs
+    -- GIN). One CASE over both hid both indexes and read every person
+    -- reference in the workspace on each call (review 2026-11-06 round 8
+    -- L14). A task's project is its parent; the walk is for deeper cards.
     RETURN EXISTS (
         SELECT 1
-        FROM attribute_def ad
-        JOIN attribute_value av ON av.attribute_def_id = ad.id
+        FROM attribute_value av
         JOIN card c ON c.id = av.card_id AND c.deleted_at IS NULL
-        WHERE ad.target_card_type_id = (SELECT id FROM card_type WHERE name = 'person')
-          -- CASE, not AND: SQL doesn't promise to test the type before the
-          -- cast, and a card_ref[] value doesn't cast to bigint.
-          AND CASE jsonb_typeof(av.value)
-                  WHEN 'number' THEN (av.value)::text::bigint = person_referable.person_id
-                  WHEN 'array' THEN av.value @> to_jsonb(person_referable.person_id)
-                  ELSE false
-              END
-          AND card_enclosing_project(c.id) = person_referable.project_id
+        WHERE av.attribute_def_id IN (
+                SELECT ad.id FROM attribute_def ad
+                WHERE ad.value_type = 'card_ref'
+                  AND ad.target_card_type_id = (SELECT id FROM card_type WHERE name = 'person'))
+          AND av.value_type_id < 50
+          AND av.value = to_jsonb(person_referable.person_id)
+          AND (c.parent_card_id = person_referable.project_id
+               OR card_enclosing_project(c.id) = person_referable.project_id)
+    ) OR EXISTS (
+        SELECT 1
+        FROM attribute_value av
+        JOIN card c ON c.id = av.card_id AND c.deleted_at IS NULL
+        WHERE av.attribute_def_id IN (
+                SELECT ad.id FROM attribute_def ad
+                WHERE ad.value_type = 'card_ref[]'
+                  AND ad.target_card_type_id = (SELECT id FROM card_type WHERE name = 'person'))
+          AND jsonb_typeof(av.value) = 'array'
+          AND av.value @> jsonb_build_array(person_referable.person_id)
+          AND (c.parent_card_id = person_referable.project_id
+               OR card_enclosing_project(c.id) = person_referable.project_id)
     );
 END
 $$;

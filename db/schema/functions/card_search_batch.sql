@@ -96,8 +96,10 @@ BEGIN
                 _allowed := card_filter_ids(_target_filter, ARRAY(
                     SELECT c.id FROM card c
                     JOIN card_type ct ON ct.id = c.card_type_id
-                    WHERE ct.name = _card_type_name AND c.deleted_at IS NULL
-                      AND NOT card_under_deleted(c.id)));
+                    WHERE ct.name = _card_type_name AND c.deleted_at IS NULL));
+                -- (No card_under_deleted here: this only narrows; the query
+                -- below drops what is under a deleted card. Per card of the
+                -- type in the workspace it doubled the search; round 8 L13.)
             END IF;
         END IF;
 
@@ -168,7 +170,12 @@ BEGIN
                         LIMIT 1
                     ) av ON TRUE
                     WHERE c.deleted_at IS NULL
-                      AND NOT card_under_deleted(c.id)
+                      -- What is under a deleted card goes with it. The
+                      -- visibility walk below checks every card above; only a
+                      -- message, whose chain goes on from its thread, needs
+                      -- card_under_deleted (round 8 L13).
+                      AND (c.parent_card_id IS NOT NULL OR ct.name <> 'reply_body'
+                           OR NOT card_under_deleted(c.id))
                       AND ct.name = _card_type_name
                       AND (
                         _query IS NULL
@@ -212,11 +219,11 @@ BEGIN
                         -- depth < 16 caps the parent walk (CLAUDE.md cap;
                         -- matches card_ancestors / scopeWalkDepth) so a
                         -- parent_card_id cycle can't pin the connection (A1).
-                        WITH RECURSIVE up(id, parent_card_id, card_type_id, depth) AS (
-                            SELECT card.id, card.parent_card_id, card.card_type_id, 0
+                        WITH RECURSIVE up(id, parent_card_id, card_type_id, deleted_at, depth) AS (
+                            SELECT card.id, card.parent_card_id, card.card_type_id, card.deleted_at, 0
                             FROM card WHERE card.id = c.id
                             UNION ALL
-                            SELECT p.id, p.parent_card_id, p.card_type_id, up.depth + 1
+                            SELECT p.id, p.parent_card_id, p.card_type_id, p.deleted_at, up.depth + 1
                             FROM card p JOIN up ON p.id = up.parent_card_id
                             WHERE up.depth < 16
                         )
@@ -224,6 +231,10 @@ BEGIN
                         FROM user_account caller
                         CROSS JOIN LATERAL user_role_visible(caller.id) ur
                         WHERE caller.id = card_search_batch.actor_id
+                          -- card_under_deleted, on this same walk: no card
+                          -- above it is deleted (review 2026-11-06 round 8
+                          -- L13 — a second walk per row doubled the cost).
+                          AND NOT EXISTS (SELECT 1 FROM up d WHERE d.depth > 0 AND d.deleted_at IS NOT NULL)
                           AND (
                             ur.scope_card_id IS NULL
                             OR ur.scope_card_id IN (
