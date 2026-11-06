@@ -194,9 +194,11 @@ BEGIN
                 format('comm.create: task %s not found', _task_id), NULL::jsonb;
             CONTINUE;
         END IF;
+        -- The code says it isn't a task; the message doesn't say what it is
+        -- (review 2026-11-06 round 8 L12).
         IF _task_kind <> 'task' THEN
             RETURN QUERY SELECT _idx, false, 'task_wrong_type'::text,
-                format('comm.create: card %s is %L, not task', _task_id, _task_kind),
+                format('comm.create: card %s can''t be used here', _task_id),
                 NULL::jsonb;
             CONTINUE;
         END IF;
@@ -213,7 +215,7 @@ BEGIN
         END IF;
         IF _channel_kind <> 'comm_channel' THEN
             RETURN QUERY SELECT _idx, false, 'channel_wrong_type'::text,
-                format('comm.create: card %s is %L, not comm_channel', _channel_id, _channel_kind),
+                format('comm.create: card %s can''t be used here', _channel_id),
                 NULL::jsonb;
             CONTINUE;
         END IF;
@@ -389,15 +391,12 @@ BEGIN
             ORDER BY m.want
             LIMIT 1;
             IF FOUND THEN
-                IF _bad_id IS NULL THEN
-                    RETURN QUERY SELECT _idx, false, 'invalid_recipient'::text,
-                        format('comm.create: person %s not found', _missing_id),
-                        NULL::jsonb;
-                ELSE
-                    RETURN QUERY SELECT _idx, false, 'invalid_recipient'::text,
-                        format('comm.create: card %s is %L, not person', _bad_id, _bad_name),
-                        NULL::jsonb;
-                END IF;
+                -- One message for a missing card, another type's and a
+                -- person the caller may not name (below): a refusal mustn't
+                -- say what a card is (review 2026-11-06 round 8 L12).
+                RETURN QUERY SELECT _idx, false, 'invalid_recipient'::text,
+                    format('comm.create: person %s can''t be used here', COALESCE(_bad_id, _missing_id)),
+                    NULL::jsonb;
                 CONTINUE;
             END IF;
             -- Each recipient must be someone the caller may name in this

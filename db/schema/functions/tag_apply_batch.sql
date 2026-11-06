@@ -169,10 +169,10 @@ BEGIN
 
         IF _tag_project_id IS NOT NULL
            AND (_target_project_id IS NULL OR _tag_project_id <> _target_project_id) THEN
+            -- attribute.update's message: a refusal mustn't say in which
+            -- project a card is (review 2026-11-06 round 8 L12).
             RETURN QUERY SELECT _idx, false, 'cross_project_ref'::text,
-                format('attribute %L: value card %s belongs to project %s but target is in project %s',
-                    'tags', _tag_id, _tag_project_id,
-                    COALESCE(_target_project_id::text, '0')),
+                format('attribute %L: value card %s can''t be used here', 'tags', _tag_id),
                 NULL::jsonb;
             CONTINUE;
         END IF;

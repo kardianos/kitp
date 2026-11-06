@@ -164,15 +164,12 @@ BEGIN
             ORDER BY m.want
             LIMIT 1;
             IF FOUND THEN
-                IF _bad_id IS NULL THEN
-                    RETURN QUERY SELECT _idx, false, 'invalid_recipient'::text,
-                        format('comm.set_recipients: person %s not found', _missing_id),
-                        NULL::jsonb;
-                ELSE
-                    RETURN QUERY SELECT _idx, false, 'invalid_recipient'::text,
-                        format('comm.set_recipients: card %s is %L, not person', _bad_id, _bad_name),
-                        NULL::jsonb;
-                END IF;
+                -- One message for a missing card, another type's and a
+                -- person the caller may not name (below): a refusal mustn't
+                -- say what a card is (review 2026-11-06 round 8 L12).
+                RETURN QUERY SELECT _idx, false, 'invalid_recipient'::text,
+                    format('comm.set_recipients: person %s can''t be used here', COALESCE(_bad_id, _missing_id)),
+                    NULL::jsonb;
                 CONTINUE;
             END IF;
             -- Someone added must be a person the caller may name in this

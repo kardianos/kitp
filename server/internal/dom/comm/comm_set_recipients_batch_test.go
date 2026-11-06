@@ -198,7 +198,7 @@ func TestCommSetRecipientsBatch_PerRowFailure(t *testing.T) {
 	if rows[2].OK || rows[2].Code != "invalid_recipient" {
 		t.Errorf("row 2 want invalid_recipient; got %+v", rows[2])
 	}
-	if !strings.Contains(rows[2].Message, "not person") {
+	if !strings.Contains(rows[2].Message, "can't be used here") {
 		t.Errorf("row 2 message: %q", rows[2].Message)
 	}
 }

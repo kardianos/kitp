@@ -234,10 +234,15 @@ BEGIN
         --    approval.decide requires. One who could only see it could never
         --    answer (review 2026-11-03 round 3 #13).
         -- Named by their title (person id when it has none), not by id
-        -- alone (review 2026-11-03 round 4 #13).
-        SELECT string_agg(COALESCE(NULLIF((SELECT tv.value #>> '{}' FROM attribute_value tv
-                                            JOIN attribute_def td ON td.id = tv.attribute_def_id AND td.name = 'title'
-                                            WHERE tv.card_id = p), ''), 'person ' || p::text), ', ') INTO _bad
+        -- alone (review 2026-11-03 round 4 #13) — but only someone the
+        -- caller may name here (person_referable): a contact's title is
+        -- often its address, and ids are sequential, so the refusal printed
+        -- any person's in the workspace (review 2026-11-06 round 8 #9).
+        SELECT string_agg(CASE WHEN person_referable(approval_set_batch.actor_id, p, _project_id)
+                               THEN COALESCE(NULLIF((SELECT tv.value #>> '{}' FROM attribute_value tv
+                                                     JOIN attribute_def td ON td.id = tv.attribute_def_id AND td.name = 'title'
+                                                     WHERE tv.card_id = p), ''), 'person ' || p::text)
+                               ELSE 'person ' || p::text END, ', ') INTO _bad
         FROM unnest(_approvers) AS p
         WHERE p = 1 OR NOT EXISTS (
             SELECT 1
