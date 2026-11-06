@@ -149,6 +149,9 @@ BEGIN
 
         IF NOT _include_deleted THEN
             _clauses := array_append(_clauses, 'c.deleted_at IS NULL');
+            -- What is under a deleted card goes with it (a thread on a
+            -- deleted task, a task in a deleted project).
+            _clauses := array_append(_clauses, 'NOT card_under_deleted(c.id)');
         END IF;
 
         IF _ids IS NOT NULL THEN

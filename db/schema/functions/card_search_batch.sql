@@ -96,7 +96,8 @@ BEGIN
                 _allowed := card_filter_ids(_target_filter, ARRAY(
                     SELECT c.id FROM card c
                     JOIN card_type ct ON ct.id = c.card_type_id
-                    WHERE ct.name = _card_type_name AND c.deleted_at IS NULL));
+                    WHERE ct.name = _card_type_name AND c.deleted_at IS NULL
+                      AND NOT card_under_deleted(c.id)));
             END IF;
         END IF;
 
@@ -167,6 +168,7 @@ BEGIN
                         LIMIT 1
                     ) av ON TRUE
                     WHERE c.deleted_at IS NULL
+                      AND NOT card_under_deleted(c.id)
                       AND ct.name = _card_type_name
                       AND (
                         _query IS NULL

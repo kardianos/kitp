@@ -1331,6 +1331,9 @@ func (p *filer) findCommByThreadID(ctx context.Context, tx store.Querier, thread
 		WHERE ad.name = 'thread_id'
 		  AND av.value = to_jsonb(:thread::text)
 		  AND c.deleted_at IS NULL
+		  -- A thread on a deleted task is gone with it: mail on it starts
+		  -- anew rather than filing where nobody sees it.
+		  AND NOT card_under_deleted(c.id)
 		  AND card_enclosing_project(c.id) = :project
 		  AND NOT card_in_off_area(c.id)
 		ORDER BY c.id

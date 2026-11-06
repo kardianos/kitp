@@ -208,7 +208,7 @@ func (f *feed) events(ctx context.Context, ref calendarRef) ([]event, error) {
 		       COALESCE(st.title, ''), COALESCE(st.phase = 'terminal', false),
 		       COALESCE((SELECT max(a.created_at) FROM activity a WHERE a.card_id = c.id), now())
 		FROM attribute_value av
-		JOIN card c ON c.id = av.card_id AND c.deleted_at IS NULL
+		JOIN card c ON c.id = av.card_id AND c.deleted_at IS NULL AND NOT card_under_deleted(c.id)
 		JOIN card_type ct ON ct.id = c.card_type_id AND ct.name = 'task'
 		LEFT JOIN LATERAL (
 			SELECT s.phase, (SELECT stt.value #>> '{}' FROM attribute_value stt WHERE stt.card_id = s.id

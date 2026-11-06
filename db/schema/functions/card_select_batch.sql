@@ -63,6 +63,7 @@ BEGIN
                 FROM card c
                 JOIN card_type ct ON ct.id = c.card_type_id
                 WHERE c.deleted_at IS NULL
+                  AND NOT card_under_deleted(c.id)
                   AND (_parent_card_id IS NULL OR c.parent_card_id = _parent_card_id)
                   AND (_card_type_name IS NULL OR ct.name = _card_type_name)
                   -- Someone else's private card (docs/PERSONAL_SCREENS.md) never lists.

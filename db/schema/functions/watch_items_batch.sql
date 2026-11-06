@@ -41,7 +41,7 @@ BEGIN
                 'added_at', to_char(we.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))
                 ORDER BY we.sort_order, we.created_at DESC, c.id)
             FROM watch_entry we
-            JOIN card c ON c.id = we.card_id AND c.deleted_at IS NULL
+            JOIN card c ON c.id = we.card_id AND c.deleted_at IS NULL AND NOT card_under_deleted(c.id)
             JOIN card_type ct ON ct.id = c.card_type_id
             LEFT JOIN card p ON p.id = c.parent_card_id
             LEFT JOIN card_type pct ON pct.id = p.card_type_id

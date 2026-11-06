@@ -130,6 +130,11 @@ that inlines its own copy of the check, or reads cards for something
 that leaves kitp (mail, sinks, exports, portal builds), must AND
 `NOT card_in_off_area(<card>)` too.
 
+`card.delete` marks one card; what sits under it goes with it. A read
+that lists or matches live cards ANDs `NOT card_under_deleted(<card>)`
+beside `deleted_at IS NULL` (a thread on a deleted task, a task in a
+deleted project), and `card.undelete` brings it all back.
+
 A **private card** (`card.private_to` set: watch lists, personal screens
 and views — docs/PERSONAL_SCREENS.md) is its person's alone, admins
 included. `VisibilityClause` and `card_visible_to` already apply that; an
