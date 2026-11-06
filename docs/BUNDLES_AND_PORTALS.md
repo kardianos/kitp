@@ -240,6 +240,24 @@ collisions, are build warnings too (shown on the Portals screen). A root
 that isn't published here is named in its warning (`"Home" in "Docs"`),
 followed by the published pages outside it.
 
+What one page can make is capped, so a page can't stop a portal's
+builds or take kitpd past its memory (`render.go`, `mdlimits.go`). Each
+cap answers with a build warning naming the page, and the build goes
+through:
+
+| cap | past it |
+|-----|---------|
+| a table: 64 columns; the page's tables: 50,000 cells | the table shows as the text it was written as |
+| the page's text: 1 MB, or 2 MB once its placeholders are expanded | the page is published without its text |
+| the page's text as HTML (`{{< toc >}}` included): 4 MB | the page is published without its text |
+| the site's text as HTML: 128 MB | the pages past it are published without their text |
+| one page with its theme: 8 MB | published without its text; if it's too large even then, the theme (or the site's navigation) is at fault and the build fails |
+
+A GFM table pads every row to its header's width, so a few KB of text
+could make a million cells; the cell count is bounded before goldmark
+builds the table. Writes refuse a page text over 512 KB. The build stops
+between pages when its tick's deadline passes.
+
 ### Serving
 
 Builds are served from kitp's own store, not written to disk or pushed

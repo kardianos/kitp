@@ -127,7 +127,7 @@ func TestBuildErrorsAndLock(t *testing.T) {
 // any link to another site (inside the kitp frame it would otherwise
 // navigate the frame).
 func TestAutolinksOpenANewTab(t *testing.T) {
-	res, err := Render(Site{Title: "Links", RootID: 1, Pages: []Page{
+	res, err := Render(context.Background(), Site{Title: "Links", RootID: 1, Pages: []Page{
 		{ID: 1, Title: "Home", Body: "See https://example.com/docs for more."},
 	}})
 	if err != nil {
@@ -143,7 +143,7 @@ func TestAutolinksOpenANewTab(t *testing.T) {
 // the portal but not placed in its tree isn't published from a placed
 // page's body.
 func TestUnplacedPagesLendNoFiles(t *testing.T) {
-	res, err := Render(Site{Title: "Files", RootID: 1, Pages: []Page{
+	res, err := Render(context.Background(), Site{Title: "Files", RootID: 1, Pages: []Page{
 		{ID: 1, Title: "Home", Body: "![Elsewhere](attachment:9)"},
 		{ID: 5, Title: "Not placed", Body: "x"}, // no parent under the root
 	}, Files: map[int64]SiteFile{9: {ID: 9, CardID: 5, Name: "secret.png", MIME: "image/png", Size: 10}}})

@@ -2,6 +2,8 @@ package portal
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"html/template"
 	"math"
@@ -15,8 +17,6 @@ import (
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
-	"github.com/yuin/goldmark/parser"
-	"github.com/yuin/goldmark/text"
 )
 
 // Page is one published page as a portal holds it: the snapshot taken
@@ -195,8 +195,10 @@ var urlScheme = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*:`)
 // in a new tab.
 //
 // The page HTML comes from the theme's page.html template; see view.
-func Render(s Site) (Result, error) {
-	r := &renderer{site: s, theme: s.Theme}
+//
+// Render stops between pages once ctx is done, returning its error.
+func Render(ctx context.Context, s Site) (Result, error) {
+	r := &renderer{ctx: ctx, site: s, theme: s.Theme}
 	if r.theme == nil {
 		t, err := ResolveTheme(ThemeSettings{Base: DefaultThemeKey}, nil)
 		if err != nil {
@@ -208,6 +210,7 @@ func Render(s Site) (Result, error) {
 }
 
 type renderer struct {
+	ctx     context.Context
 	site    Site
 	theme   *Theme
 	res     Result
@@ -218,6 +221,8 @@ type renderer struct {
 	byID    map[int64]*node
 	reading []*node
 	files   map[int64]string // attachment id → published path
+	// text is the pages' text so far, as HTML (maxSiteTextBytes).
+	text int
 }
 
 func (r *renderer) warn(format string, a ...any) {
@@ -281,18 +286,21 @@ func (r *renderer) render() (Result, error) {
 		}
 	}
 	r.place(root, kids)
-	r.md = goldmark.New(
-		goldmark.WithExtensions(extension.GFM),
-		goldmark.WithParserOptions(parser.WithAutoHeadingID()),
-	)
+	r.md = newMarkdown()
 	r.files = map[int64]string{}
 	for _, n := range r.all {
+		if err := r.ctx.Err(); err != nil {
+			return Result{}, err
+		}
 		if err := r.renderBody(n); err != nil {
 			return Result{}, fmt.Errorf("render %q: %w", n.page.Title, err)
 		}
 	}
 	r.reading = r.readingOrder()
 	for _, n := range r.all {
+		if err := r.ctx.Err(); err != nil {
+			return Result{}, err
+		}
 		if err := r.renderPages(n); err != nil {
 			return Result{}, err
 		}
@@ -421,6 +429,18 @@ func (r *renderer) renderBody(n *node) error {
 	if err != nil {
 		return err
 	}
+	if out.tableRefused {
+		pageWarn("%s", tooLargeTableWarning())
+	}
+	switch {
+	case out.tooLarge:
+		pageWarn("came out too large to publish (over %d MB as HTML); published without its text", maxBodyHTMLBytes>>20)
+		return nil
+	case r.text+len(out.html) > maxSiteTextBytes:
+		pageWarn("was published without its text: the site's pages are over %d MB of HTML in all", maxSiteTextBytes>>20)
+		return nil
+	}
+	r.text += len(out.html)
 	n.html, n.headings, n.summary, n.image = out.html, out.headings, out.summary, out.image
 	return nil
 }
@@ -527,6 +547,14 @@ func (r *renderer) renderPages(n *node) error {
 			v.Pager = r.pager(n, base, k, pages)
 		}
 		out, err := r.execute(v)
+		if errors.Is(err, errTooLarge) && v.Content != "" {
+			// The page's own text made it too large: publish it without.
+			// A page too large even then is the theme's (or the site's
+			// navigation's), and fails the build as before.
+			r.warn("%q came out larger than %d MB; published without its text", n.page.Title, maxPageBytes>>20)
+			v.Content, v.Headings = "", nil
+			out, err = r.execute(v)
+		}
 		if err != nil {
 			return fmt.Errorf("theme, page %q: %w", n.page.Title, err)
 		}
@@ -697,10 +725,11 @@ func (r *renderer) article(c *node, base string) article {
 }
 
 // maxPageBytes caps one rendered page: a template that writes without
-// end stops at this, as an error (review A20).
-const maxPageBytes = 8 << 20
+// end stops at this, as an error (review A20). A var for the tests.
+var maxPageBytes = 8 << 20
 
-// capWriter is a bytes.Buffer that refuses to grow past max.
+// capWriter is a bytes.Buffer that refuses to grow past max: its error
+// wraps errTooLarge.
 type capWriter struct {
 	buf bytes.Buffer
 	max int
@@ -708,14 +737,26 @@ type capWriter struct {
 
 func (w *capWriter) Write(p []byte) (int, error) {
 	if w.buf.Len()+len(p) > w.max {
-		return 0, fmt.Errorf("a page came out larger than %d MB", w.max>>20)
+		return 0, tooLargeError{max: w.max}
 	}
 	return w.buf.Write(p)
 }
 
+// tooLargeError is a capWriter's: errors.Is(err, errTooLarge).
+type tooLargeError struct{ max int }
+
+func (e tooLargeError) Error() string {
+	return fmt.Sprintf("a page came out larger than %d MB", e.max>>20)
+}
+
+func (e tooLargeError) Is(target error) bool { return target == errTooLarge }
+
 func (r *renderer) execute(v view) ([]byte, error) {
 	w := &capWriter{max: maxPageBytes}
 	if err := r.theme.tmpl.ExecuteTemplate(w, "page.html", v); err != nil {
+		if errors.Is(err, errTooLarge) {
+			return nil, err
+		}
 		return nil, templateError(err)
 	}
 	return w.buf.Bytes(), nil
@@ -873,7 +914,7 @@ type span struct{ start, stop int }
 // codeRanges returns the byte ranges of src's code spans and code blocks.
 func codeRanges(md goldmark.Markdown, src []byte) ([]span, error) {
 	var out []span
-	doc := md.Parser().Parse(text.NewReader(src))
+	doc, _ := parseMarkdown(md, src)
 	err := ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
 		if !entering {
 			return ast.WalkContinue, nil
@@ -943,6 +984,10 @@ type rendered struct {
 	headings []headingView
 	summary  string
 	image    string
+	// tableRefused: a table passed the limits and shows as text.
+	tableRefused bool
+	// tooLarge: the HTML passed maxBodyHTMLBytes (html is empty).
+	tooLarge bool
 }
 
 // renderMarkdown renders one body for a page at base:
@@ -960,8 +1005,8 @@ func renderMarkdown(md goldmark.Markdown, body, base string,
 	files func(dest string) (path string, isFile, ok bool),
 ) (rendered, error) {
 	src := []byte(body)
-	doc := md.Parser().Parse(text.NewReader(src))
-	var out rendered
+	doc, refused := parseMarkdown(md, src)
+	out := rendered{tableRefused: refused}
 	err := ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
 		if !entering {
 			return ast.WalkContinue, nil
@@ -1028,20 +1073,31 @@ func renderMarkdown(md goldmark.Markdown, body, base string,
 	if err != nil {
 		return rendered{}, err
 	}
-	var buf bytes.Buffer
-	if err := md.Renderer().Render(&buf, src, doc); err != nil {
+	w := &capWriter{max: maxBodyHTMLBytes}
+	if err := md.Renderer().Render(w, src, doc); err != nil {
+		if errors.Is(err, errTooLarge) {
+			return rendered{tableRefused: refused, tooLarge: true}, nil
+		}
 		return rendered{}, err
 	}
-	html := buf.String()
-	if strings.Contains(html, tocMarker) {
+	html := w.buf.String()
+	if k := strings.Count(html, tocMarker); k > 0 {
+		// Every {{< toc >}} is the whole list of headings: count what
+		// they make before making it.
 		var t strings.Builder
 		if len(out.headings) > 0 {
 			t.WriteString(`<nav class="toc" aria-label="On this page"><ul>`)
 			for _, h := range out.headings {
+				if t.Len() > maxBodyHTMLBytes {
+					break
+				}
 				fmt.Fprintf(&t, `<li class="toc-%d"><a href="#%s">%s</a></li>`, h.Level,
 					template.HTMLEscapeString(h.ID), template.HTMLEscapeString(h.Text))
 			}
 			t.WriteString(`</ul></nav>`)
+		}
+		if t.Len() > maxBodyHTMLBytes || len(html)+k*t.Len() > maxBodyHTMLBytes {
+			return rendered{tableRefused: refused, tooLarge: true}, nil
 		}
 		html = strings.ReplaceAll(html, "<p>"+tocMarker+"</p>", t.String())
 		html = strings.ReplaceAll(html, tocMarker, "")

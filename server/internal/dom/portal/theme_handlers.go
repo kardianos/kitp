@@ -445,7 +445,7 @@ func checkThemeWith(ctx context.Context, tx store.Querier, storage *cas.Storage,
 	if err != nil && t == nil {
 		return &TemplateProblem{err}
 	}
-	if _, err := Render(sampleSite(t)); err != nil {
+	if _, err := Render(ctx, sampleSite(t)); err != nil {
 		return &TemplateProblem{err}
 	}
 	return nil

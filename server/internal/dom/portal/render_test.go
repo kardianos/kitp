@@ -1,6 +1,7 @@
 package portal
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -40,7 +41,7 @@ func site() Site {
 // TestRenderPaths pins the file layout: directory-style pages, a slug
 // collision suffixed, and the orphan left out with a warning.
 func TestRenderPaths(t *testing.T) {
-	res, err := Render(site())
+	res, err := Render(context.Background(), site())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +70,7 @@ func TestRenderPaths(t *testing.T) {
 // TestRenderLinksAreRelative is the link table: every page links to the
 // stylesheet, home and other pages relative to its own directory.
 func TestRenderLinksAreRelative(t *testing.T) {
-	res, err := Render(site())
+	res, err := Render(context.Background(), site())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +103,7 @@ func TestRenderLinksAreRelative(t *testing.T) {
 // TestRenderTOCAndSafety checks the toc placeholder becomes a heading list
 // and raw HTML in a body is dropped, not passed through.
 func TestRenderTOCAndSafety(t *testing.T) {
-	res, err := Render(site())
+	res, err := Render(context.Background(), site())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +134,7 @@ func TestRenderWithoutRoot(t *testing.T) {
 		{Title: "Empty"},
 		{Title: "Unpublished root", RootID: 7, Pages: []Page{{ID: 8, ParentID: 7, Title: "Child"}}},
 	} {
-		res, err := Render(s)
+		res, err := Render(context.Background(), s)
 		if err != nil {
 			t.Fatalf("%s: %v", s.Title, err)
 		}
@@ -154,7 +155,7 @@ func TestRenderWithoutRoot(t *testing.T) {
 // while other pages are (a portal pointed at the wrong "Home"). The
 // warnings name the root and list the pages it is missing.
 func TestRenderRootMismatch(t *testing.T) {
-	res, err := Render(Site{
+	res, err := Render(context.Background(), Site{
 		Title: "Docs", RootID: 82, RootTitle: "Home", RootProject: "Bundle: Publishing",
 		Pages: []Page{{ID: 106, Title: "Home"}, {ID: 107, ParentID: 106, Title: "Getting started"}},
 	})
@@ -204,7 +205,7 @@ func TestEveryBaseThemeRenders(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			res, err := Render(sampleSite(th))
+			res, err := Render(context.Background(), sampleSite(th))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -265,7 +266,7 @@ func TestNavModes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		res, err := Render(navSite(th))
+		res, err := Render(context.Background(), navSite(th))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -292,7 +293,7 @@ func TestPaging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := Render(sampleSite(th))
+	res, err := Render(context.Background(), sampleSite(th))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +325,7 @@ func TestPublishedFiles(t *testing.T) {
 		{ID: 1, Title: "Home", Body: "![Chart](/api/v1/attachment/7/view)\n\n![Secret](/api/v1/attachment/8/view)\n\n[PDF](attachment:7) and [site](https://example.com)."},
 		{ID: 2, ParentID: 1, Title: "Sub", Body: "![Chart](/api/v1/attachment/7/view)"},
 	}, Files: map[int64]SiteFile{7: {ID: 7, CardID: 1, Name: "Q3 Chart.PNG", MIME: "image/png", Size: 10}}}
-	res, err := Render(s)
+	res, err := Render(context.Background(), s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +367,7 @@ func TestCustomTheme(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := Render(sampleSite(th))
+	res, err := Render(context.Background(), sampleSite(th))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,7 +399,7 @@ func TestBadThemes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Render(sampleSite(th)); err == nil || !strings.Contains(err.Error(), "page.html:2") || !strings.Contains(err.Error(), "Nope") {
+	if _, err := Render(context.Background(), sampleSite(th)); err == nil || !strings.Contains(err.Error(), "page.html:2") || !strings.Contains(err.Error(), "Nope") {
 		t.Errorf("unknown field: %v", err)
 	}
 	if _, err := ResolveTheme(ThemeSettings{Base: "sidebar"}, []ThemeFile{{Path: "theme.json", Data: []byte(`{"nav": "sideways"}`)}}); err == nil {
@@ -426,7 +427,7 @@ func TestSummary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := Render(Site{Title: "S", RootID: 1, Theme: th, Pages: []Page{
+	res, err := Render(context.Background(), Site{Title: "S", RootID: 1, Theme: th, Pages: []Page{
 		{ID: 1, Title: "Home"},
 		{ID: 2, ParentID: 1, Title: "Pic", Sort: 1, Body: "![photo](https://example.com/a.png)\n\nThe real opening."},
 		{ID: 3, ParentID: 1, Title: "Toc", Sort: 2, Body: "{{< toc >}}\n\n## Head\n\nAfter the contents."},

@@ -143,7 +143,7 @@ func (b *Builder) lockPortal(ctx context.Context, portalID int64) (release func(
 		conn.Release()
 		return nil, false, nil
 	}
-	unlockSQL, uargs, err := q.Compile(`SELECT pg_advisory_unlock(hashtextextended('kitp.portal.build:' || (:portal::bigint)::text, 0))`)
+	unlockSQL, uargs, err := q.Compile(portalUnlockSQL)
 	if err != nil {
 		conn.Release()
 		return nil, false, fmt.Errorf("compile: %w", err)
@@ -153,11 +153,21 @@ func (b *Builder) lockPortal(ctx context.Context, portalID int64) (release func(
 		uctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if _, err := conn.Exec(uctx, unlockSQL, uargs...); err != nil {
+			// The lock would stay on the pooled connection, and the
+			// portal's builds be skipped until it is recycled: close it,
+			// which ends the session and its lock (as job.Exclusive does).
 			b.logger().Warn("portal build: unlock", "portal_id", portalID, "err", err)
+			if cerr := conn.Conn().Close(context.Background()); cerr != nil {
+				b.logger().Warn("portal build: close after failed unlock", "portal_id", portalID, "err", cerr)
+			}
 		}
 		conn.Release()
 	}, true, nil
 }
+
+// portalUnlockSQL releases lockPortal's lock; a var so a test can make it
+// fail.
+var portalUnlockSQL = `SELECT pg_advisory_unlock(hashtextextended('kitp.portal.build:' || (:portal::bigint)::text, 0))`
 
 func (b *Builder) logger() *slog.Logger {
 	if b.Logger != nil {
@@ -175,8 +185,11 @@ func (b *Builder) Build(ctx context.Context, portalID int64, since time.Time) (i
 	if err != nil {
 		return 0, err
 	}
-	res, err := Render(site)
+	res, err := Render(ctx, site)
 	if err != nil {
+		if cerr := ctx.Err(); cerr != nil && errors.Is(err, cerr) {
+			return 0, fmt.Errorf("render: %w", err)
+		}
 		return 0, &TemplateProblem{err}
 	}
 	// The attachments page bodies show: read each file's chunks and store
@@ -326,7 +339,7 @@ func (b *Builder) markAttempt(ctx context.Context, portalID int64) error {
 	sql, args, err := q.Compile(`
 		UPDATE portal_state
 		SET fail_count = fail_count + 1, failed_at = now(),
-		    last_error = COALESCE(last_error, 'The last build didn''t finish; the server log has the details.')
+		    last_error = 'The last build didn''t finish; the server log has the details.'
 		WHERE portal_id = :portal`)
 	if err != nil {
 		return fmt.Errorf("compile: %w", err)
