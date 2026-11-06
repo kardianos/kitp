@@ -313,3 +313,25 @@ test('the /watch-lists route and its help topic', () => {
   assert.equal(r.name, 'watch_lists');
   assert.equal(M.helpTopicForRoute(r), 'watch_lists');
 });
+
+test('watch marks: a row\'s lists decode from the wire and render as symbols named on hover', () => {
+  const row = M.decodeCardWithAttrs({
+    id: '54', card_type_id: '5', card_type_name: 'task', attributes: {},
+    watch: [{ id: '900', symbol: '★', title: 'Stars' }, { id: '901', symbol: '🔥', title: 'Urgent' }, { id: '902', symbol: '' }, null],
+  });
+  assert.deepEqual(row.watch, [
+    { id: 900n, symbol: '★', title: 'Stars' },
+    { id: 901n, symbol: '🔥', title: 'Urgent' },
+  ], 'a mark without a symbol is dropped');
+  assert.equal(M.decodeCardWithAttrs({ id: '55', attributes: {} }).watch, undefined, 'on none: no field');
+  assert.equal(M.decodeWatchMarks([]), undefined);
+
+  const el = M.watchMarks(row.watch);
+  assert.equal(el.className, 'watch-marks');
+  assert.equal(el.textContent, '★🔥');
+  assert.deepEqual([...el.children].map((s) => s.dataset.watchListId), ['900', '901']);
+  assert.equal(el.title, 'On your lists: ★ Stars, 🔥 Urgent');
+  assert.equal(el.getAttribute('aria-label'), 'On your lists: Stars, Urgent');
+  assert.equal(M.watchMarks(undefined), null);
+  assert.equal(M.watchMarks([]), null);
+});

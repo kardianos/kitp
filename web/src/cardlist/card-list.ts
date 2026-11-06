@@ -11,6 +11,7 @@
  */
 
 import { derivedParts } from './derived-columns.js';
+import { watchMarks } from '../watch/marks.js';
 import { Control } from '../core/control.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { asAttrId } from '../kanban/kanban-helpers.js';
@@ -147,6 +148,12 @@ export class CardListBody extends CardListCore<CardListBodyConfig> {
     const relation = document.createElement('span');
     relation.className = 'card-list__relation';
     relation.dataset.role = 'relation';
+    // The viewer's own watch lists the card is on (watch/marks.ts), filled
+    // per-card; hidden when it is on none.
+    const watch = document.createElement('span');
+    watch.className = 'card-list__watch';
+    watch.dataset.role = 'watch';
+    watch.style.display = 'none';
     const subject = document.createElement('span');
     subject.className = 'card-list__subject';
     subject.dataset.role = 'subject';
@@ -160,7 +167,7 @@ export class CardListBody extends CardListCore<CardListBodyConfig> {
     const derived = document.createElement('span');
     derived.className = 'card-list__derived';
     derived.dataset.role = 'derived';
-    line1.append(idEl, relation, subject, derived);
+    line1.append(idEl, relation, watch, subject, derived);
     const line2 = document.createElement('div');
     line2.className = 'card-list__line2';
     line2.dataset.role = 'cols';
@@ -244,6 +251,13 @@ export class CardListBody extends CardListCore<CardListBodyConfig> {
     } else {
       relation.replaceChildren();
       relation.style.display = 'none';
+    }
+
+    const watchEl = el.querySelector('[data-role="watch"]') as HTMLElement | null;
+    if (watchEl !== null) {
+      const marks = watchMarks(card.watch);
+      watchEl.replaceChildren(...(marks !== null ? [marks] : []));
+      watchEl.style.display = marks !== null ? '' : 'none';
     }
 
     const subject = el.querySelector('[data-role="subject"]') as HTMLElement;

@@ -323,3 +323,54 @@ func TestWatchListFilter(t *testing.T) {
 		t.Error("an unsupported op compiled")
 	}
 }
+
+// TestRowsCarryTheViewersWatchMarks: card.select_with_attributes with
+// with_watch adds each row's marks — the caller's own live lists it is on,
+// in list order, with symbol and name — and nothing for another account's
+// lists, a deleted list, or a request that didn't ask.
+func TestRowsCarryTheViewersWatchMarks(t *testing.T) {
+	f := setup(t, "kitp_test_watch_marks")
+	stars := lists(t, f, f.ada, 0)[0].ID
+	var urgent, gone, deleted watch.IDOutput
+	into(t, call(t, f.srv, f.ada, "watch_list", "set", map[string]any{"title": "Urgent", "symbol": "🔥"}), &urgent)
+	into(t, call(t, f.srv, f.ada, "watch_list", "set", map[string]any{"title": "Gone", "symbol": "🧊"}), &gone)
+	bobStars := lists(t, f, f.bob, 0)[0].ID
+	one := f.task(t, f.project, "One")
+	two := f.task(t, f.project, "Two")
+	three := f.task(t, f.project, "Three")
+	setOn(t, f, f.ada, urgent.ID, one, true)
+	setOn(t, f, f.ada, stars, one, true)
+	setOn(t, f, f.ada, gone.ID, two, true)
+	setOn(t, f, f.bob, bobStars, one, true)
+	into(t, call(t, f.srv, f.ada, "watch_list", "delete", map[string]any{"id": fmt.Sprint(gone.ID)}), &deleted)
+
+	marks := func(ctx context.Context, withWatch bool) map[int64]string {
+		t.Helper()
+		var out card.SelectWithAttributesOutput
+		into(t, call(t, f.srv, ctx, "card", "select_with_attributes", map[string]any{
+			"card_type_name": "task", "parent_card_id": fmt.Sprint(f.project), "with_watch": withWatch,
+		}), &out)
+		got := map[int64]string{}
+		for _, r := range out.Rows {
+			s := ""
+			for _, m := range r.Watch {
+				s += fmt.Sprintf("%d %s %s;", m.ID, m.Symbol, m.Title)
+			}
+			got[r.ID] = s
+		}
+		return got
+	}
+	ada := marks(f.ada, true)
+	if want := fmt.Sprintf("%d ★ Stars;%d 🔥 Urgent;", stars, urgent.ID); ada[one] != want {
+		t.Errorf("ada's marks on One: %q, want %q", ada[one], want)
+	}
+	if ada[two] != "" || ada[three] != "" {
+		t.Errorf("Two (on a deleted list) %q, Three (on none) %q: want none", ada[two], ada[three])
+	}
+	if got, want := marks(f.bob, true)[one], fmt.Sprintf("%d ★ Stars;", bobStars); got != want {
+		t.Errorf("bob's marks on One: %q, want only his own %q", got, want)
+	}
+	if got := marks(f.ada, false)[one]; got != "" {
+		t.Errorf("without with_watch: %q, want none", got)
+	}
+}

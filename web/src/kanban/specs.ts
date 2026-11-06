@@ -29,6 +29,7 @@ import { registerCardRefAttr } from '../core/dispatch.js';
 import type { CardWithAttrs } from './kanban-helpers.js';
 import type { CardWherePredicate } from '../projects/project-helpers.js';
 import type { WireNode } from '../filter/predicate.js';
+import { decodeWatchMarks } from '../watch/marks.js';
 
 /* -------------------------------------------------------------------------- */
 /* Spec keys (addressed by the declarative binding tables).                    */
@@ -89,6 +90,9 @@ export interface SelectWithAttributesInput {
   /** Add each row's open approval requests (`approvals`) — screens showing
    *  an approvals column (see cardlist/derived-columns). */
   withApprovals?: boolean;
+  /** Add each row's `watch`: the viewer's own watch lists it is on — the
+   *  marks the Grid, list rows and Kanban cards show by a title. */
+  withWatch?: boolean;
 }
 export interface SelectWithAttributesOutput {
   rows: CardWithAttrs[];
@@ -184,6 +188,9 @@ export function decodeCardWithAttrs(j: Record<string, unknown>): CardWithAttrs {
       waitingOnMe: a['waiting_on_me'] === true,
     };
   }
+  // The viewer's own watch lists it is on, when with_watch asked.
+  const watch = decodeWatchMarks(j['watch']);
+  if (watch !== undefined) out.watch = watch;
   // Row-level audit timestamps the wire carries at the top level (the Grid's
   // Created / Last-activity columns read these — previously dropped).
   if (typeof j['created_at'] === 'string') out.created_at = j['created_at'];
@@ -240,6 +247,7 @@ export function registerKanbanSpecs(api: Api): void {
       if (i.withPersonalSort === true) m['with_personal_sort'] = true;
       if (i.routedToMe === true) m['routed_to_me'] = true;
       if (i.withApprovals === true) m['with_approvals'] = true;
+      if (i.withWatch === true) m['with_watch'] = true;
       return m;
     },
     decode: (raw): SelectWithAttributesOutput => ({

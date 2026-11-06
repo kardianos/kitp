@@ -18,6 +18,9 @@ items in the account's own order.
   name and description (Save, Delete asks once), and what is on it — drag by
   the handle or ↑ / ↓ to reorder, Remove to take off, each row opening its
   task or thread.
+- **Marks:** on the Grid, list rows and Kanban cards, a task or thread on
+  one of the viewer's lists has those lists' symbols in front of its title
+  (hover names them); each viewer sees their own.
 - **Filter:** every task and thread filter has **On my watch list** — *Any of
   my lists* (`@me`) or particular lists, *in* / *not in* — usually with the
   screen's *Active* phase. Calendar feeds and notification subscriptions
@@ -36,6 +39,7 @@ items in the account's own order.
 | W7 | Filter leaf `{attr: "watch_list", op: "in" \| "not in", values}`: values are list ids, or a person id meaning any of that person's lists — what `@me` resolves to — so a shared screen filtered on *Any of my lists* shows each viewer their own. Both compilers (`card_compile_predicate.sql`, `where.go` `compileWatchLeaf`) emit `watched_on(c.id, ARRAY[…], <viewer person>)`, which only counts lists private to the viewer (the person the tree is evaluated for: the caller, a calendar's or subscription's owner) — another person's id or list id names nothing (review 2026-11-03 #8). |
 | W8 | The filter's option list and "Me" label are data (`attribute-schema.ts`): the field's `meLabel` ("Any of my lists"; person fields keep "Me"), and `DERIVED_OPTION_SOURCES` says its options come from `watch_list.list`, loaded by both the screen filter bar and the standalone filter loader. |
 | W9 | Which detail pages show the bookmarks is the detail profile's `watch` flag (task, comm), not a branch in TaskDetail. |
+| W10 | The marks ride on the rows: `card.select_with_attributes` takes `with_watch` and adds each row's `watch` (`watch_marks`: the caller's own live lists it is on, `[{id, symbol, title}]` by list id, omitted on none), as `with_approvals` adds `approvals`. The Grid, list and Kanban queries always ask; it isn't a screen column, since the marks are each viewer's own. |
 
 ## Detail
 
@@ -49,6 +53,7 @@ items in the account's own order.
 | `watch.set` | `{watch_list_id, card_id, on}` → `{on}`; refuses `not_found` (not your list), `card_not_found` (not visible), `validation` (not a task or thread) |
 | `watch.items` | `{watch_list_id}` → `{items: [{card_id, card_type, title, task_id, project_id, project_title, status, phase, sort_order, added_at}]}`; `task_id` is a thread's task (where it opens) |
 | `watch.move` | `{watch_list_id, card_id, sort_order}` → `{sort_order}`; `not_on_list` when it isn't |
+| `card.select_with_attributes` `with_watch` | each row's `watch: [{id, symbol, title}]`, the caller's lists it is on (W10) |
 
 ### Schema
 
@@ -58,7 +63,7 @@ items in the account's own order.
 - `watch_entry` table (DDL, every boot): PK `(watch_list_id, card_id)`,
   indexes `(card_id)` for the filter and `(watch_list_id, sort_order)` for
   the list.
-- Functions: `account_person` (was `watch_owner`), `watch_list_owned_by`, `watched_on`,
+- Functions: `account_person` (was `watch_owner`), `watch_list_owned_by`, `watched_on`, `watch_marks`,
   `watch_list_{list,set,delete}_batch`, `watch_{set,items,move}_batch`.
 
 ### Web
@@ -70,6 +75,9 @@ items in the account's own order.
 - `web/src/watch/watch-lists.ts` — WatchLists (the screen, `?list=<id>` in the
   address); drag reorder on the shared DnD kit (`DropPlaceholder`,
   `computeDropTarget`), ↑ / ↓ buttons for the keyboard.
+- `web/src/watch/marks.ts` — `decodeWatchMarks` (the rows' `watch`) and
+  `watchMarks` (the symbols, named on hover), used by the Grid's title cell,
+  CardListBody's row (a slot before the subject) and Kanban's card title.
 - Route `/watch-lists` (`watch_lists`, help topic `watch_lists`); rail user
   menu entry; Account page section.
 
@@ -81,7 +89,8 @@ bookmarks) along with links, threads and comments.
 ## Tests
 
 `server/internal/dom/watch/watch_test.go` (Stars once, owner-only CRUD,
-entries, order, refusals, the filter in both compilers), `store` 0026;
+entries, order, refusals, the filter in both compilers, the rows' marks),
+`store` 0026;
 `web/test/watch-lists.test.mjs` (WatchBar, WatchLists, helpers, filter field,
-route), `predicate-filter.test.mjs` ("Any of my lists"), `task-detail.test.mjs`
+route, marks), `grid` / `card-list` / `kanban-control` (the marks by a title), `predicate-filter.test.mjs` ("Any of my lists"), `task-detail.test.mjs`
 (Refresh).

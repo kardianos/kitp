@@ -8,6 +8,10 @@ Each task and thread shows your lists' symbols in the top corner of its page, be
 
 New items go to the top of the list.
 
+## Spotting them on a screen
+
+On a grid, a list and a board, a task or thread on one of your lists has those lists' symbols in front of its title — ★ for Stars, 🔥 for a list whose symbol is 🔥 — so it stands out as you scroll. Point at them to see the lists' names. They are yours: a teammate looking at the same screen sees their own.
+
 ## This screen
 
 - **Your lists** (left), oldest first, with how many items each holds. Pick one to see it; **+ New list** adds one (rename it straight away).
@@ -24,4 +28,4 @@ The same filter works in a calendar feed (Account → Calendars) and a notificat
 
 ## For agents and the API
 
-`watch_list.list` / `.set` / `.delete` manage your lists, `watch.set` puts a card on one, `watch.items` reads one in order, `watch.move` sets an item's place (`sort_order`, between its neighbours). The card filter leaf is `{attr: "watch_list", op: "in", values: ["@me"]}`. An agent uses its owner's lists.
+`watch_list.list` / `.set` / `.delete` manage your lists, `watch.set` puts a card on one, `watch.items` reads one in order, `watch.move` sets an item's place (`sort_order`, between its neighbours). The card filter leaf is `{attr: "watch_list", op: "in", values: ["@me"]}`; `card.select_with_attributes` with `with_watch: true` adds each row's `watch` — your lists it is on, `[{id, symbol, title}]`. An agent uses its owner's lists.

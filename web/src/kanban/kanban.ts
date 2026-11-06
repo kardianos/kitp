@@ -48,6 +48,7 @@
  */
 
 import { derivedParts } from '../cardlist/derived-columns.js';
+import { watchMarks } from '../watch/marks.js';
 import { Control, type BaseControlConfig, type ControlContext } from '../core/control.js';
 import type { ActionBinding, QueryBinding } from '../core/data.js';
 import type { ApiFault } from '../core/dispatch.js';
@@ -274,6 +275,8 @@ export class Kanban extends Control<KanbanConfig> {
         // A screen showing an approvals column (derived-columns) asks for the
         // cards' open approval requests.
         withApprovals: { from: 'screen.withApprovals' },
+        // Each row's marks for the viewer's own watch lists (watch/marks.ts).
+        withWatch: { lit: true },
         // Search + Advanced predicate, resolved at fire time (see applyFilter).
         where: { from: 'kanban.where' },
         tree: { from: 'kanban.tree' },
@@ -1135,7 +1138,11 @@ export class Kanban extends Control<KanbanConfig> {
     // the server-confirm re-render doesn't cut the animation short.
     applySettle(el, 'card--settling', this.settleCardId !== null && card.id === this.settleCardId);
     const title = childByRole(el, 'title');
-    if (title) title.textContent = titleOf(card);
+    if (title) {
+      // The viewer's own watch lists it is on lead the title (watch/marks.ts).
+      const marks = watchMarks(card.watch);
+      title.replaceChildren(...(marks !== null ? [marks] : []), document.createTextNode(titleOf(card)));
+    }
     const tagsRow = childByRole(el, 'tags');
     const idRow = childByRole(el, 'id');
     if (tagsRow === null || idRow === null) return;

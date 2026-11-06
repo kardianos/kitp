@@ -496,6 +496,52 @@ test('CardListBody/inbox: child task rows lead with a typed relation symbol; sta
   assert.equal(soloRel.querySelector('.relation-ind'), null, 'standalone row has no relation indicator');
 });
 
+test('CardListBody/inbox: a row on the viewer\'s watch lists shows their symbols before its subject', async () => {
+  const rowsData = [
+    {
+      id: '403', card_type_name: 'task', attributes: { title: 'Bookmarked', status: 40 }, personal_sort_order: 100,
+      watch: [{ id: '900', symbol: '★', title: 'Stars' }],
+    },
+    { id: '404', card_type_name: 'task', attributes: { title: 'Not on a list', status: 41 }, personal_sort_order: 200 },
+  ];
+  const taskQueries = [];
+  const transport = {
+    async send(body) {
+      const req = JSON.parse(body);
+      const respond = (sr) => {
+        const key = `${sr.endpoint}.${sr.action}`;
+        const data = sr.data ?? {};
+        if (key === 'card.select_with_attributes') {
+          const ct = data.card_type_name;
+          if (ct === 'status') {
+            return { id: sr.id, ok: true, data: { rows: TASK_STATUSES.map((s) => ({ id: s.id, phase: s.phase, attributes: { title: s.title } })) } };
+          }
+          if (ct === 'task') {
+            taskQueries.push(data);
+            return { id: sr.id, ok: true, data: { rows: rowsData } };
+          }
+        }
+        return { id: sr.id, ok: true, data: { rows: [] } };
+      };
+      return { status: 200, text: JSON.stringify({ subresponses: req.subrequests.map(respond) }) };
+    },
+  };
+
+  const { dispatcher, api } = bootInbox(transport);
+  const { c } = mountInbox(api);
+  await settle(dispatcher);
+
+  assert.equal(taskQueries.at(-1).with_watch, true, 'the list query asks for the marks');
+  const rows = filledRows(c);
+  const marked = rows.find((r) => r.dataset.cardId === '403').querySelector('[data-role="watch"]');
+  assert.notEqual(marked.style.display, 'none');
+  assert.equal(marked.querySelector('.watch-marks').textContent, '★');
+  assert.equal(marked.querySelector('.watch-marks').title, 'On your lists: ★ Stars');
+  const plain = rows.find((r) => r.dataset.cardId === '404').querySelector('[data-role="watch"]');
+  assert.equal(plain.style.display, 'none', 'a row on no list hides the slot');
+  assert.equal(plain.querySelector('.watch-marks'), null);
+});
+
 test('CardListBody/inbox: GROUP picker (screen.groupAxis) buckets into header + row sections', async () => {
   const { dispatcher, api } = bootInbox(inboxHarness().transport);
   const { c, tree } = mountInbox(api);

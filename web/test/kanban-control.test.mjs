@@ -243,6 +243,46 @@ test('Kanban: each column renders its cards through the recycling virtualList', 
   assert.equal(visibleCards(m1).length, 2, 'two visible cards (rest of the pool parked)');
 });
 
+test('Kanban: a card on the viewer\'s watch lists leads its title with their symbols', async () => {
+  // The demo transport, with task 201 on two of the viewer's lists.
+  const inner = M.mockTransport();
+  const taskQueries = [];
+  const transport = {
+    async send(body) {
+      for (const sr of JSON.parse(body).subrequests) {
+        if (sr.endpoint === 'card' && sr.action === 'select_with_attributes' && sr.data?.card_type_name === 'task') taskQueries.push(sr.data);
+      }
+      const res = await inner.send(body);
+      const out = JSON.parse(res.text);
+      for (const r of out.subresponses) {
+        for (const row of r.data?.rows ?? []) {
+          if (row.id === '201' && row.card_type_name === 'task') row.watch = [{ id: '900', symbol: '★', title: 'Stars' }, { id: '901', symbol: '🔥', title: 'Urgent' }];
+        }
+      }
+      return { ...res, text: JSON.stringify(out) };
+    },
+  };
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(M.DEMO_PROJECT_ID);
+  const scope = {
+    get projectId() {
+      return tree.at(['scope', 'projectId']).peek() ?? null;
+    },
+  };
+  const kanban = M.Control.New('Kanban', { type: 'Kanban' }, { api, tree, scope });
+  kanban.mount(new FakeElement('div'));
+  await settle(dispatcher);
+
+  assert.ok(taskQueries.length > 0 && taskQueries.every((d) => d.with_watch === true), 'the tasks query asks for the marks');
+  const cards = kanban.el.querySelectorAll('[data-kanban-card]').filter((c) => c.style.display !== 'none');
+  const titleOf = (id) => cards.find((c) => c.dataset.cardId === id).querySelectorAll('[data-role]').find((e) => e.dataset.role === 'title');
+  const marked = titleOf('201');
+  assert.equal(marked.querySelector('.watch-marks')?.textContent, '★🔥');
+  assert.match(marked.textContent, /^★🔥\S/, 'marks lead the title');
+  assert.equal(titleOf('202').querySelector('.watch-marks'), null, 'a card on no list has none');
+});
+
 /* -------------------------------------------------------------------------- */
 /* The column row is the horizontal scroll container (issue #14): it carries    */
 /* the visible-scrollbar `.scroll-x` class so overflowing columns scroll        */

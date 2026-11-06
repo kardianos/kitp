@@ -49,6 +49,7 @@
  */
 
 import { derivedColumn } from '../cardlist/derived-columns.js';
+import { watchMarks } from '../watch/marks.js';
 import { Control } from '../core/control.js';
 import type { QueryBinding } from '../core/data.js';
 import type { ApiFault } from '../core/dispatch.js';
@@ -254,6 +255,8 @@ export class Grid extends CardListCore<GridConfig> {
         // A screen showing an approvals column (derived-columns) asks for the
         // rows' open approval requests.
         withApprovals: { from: 'screen.withApprovals' },
+        // Each row's marks for the viewer's own watch lists (watch/marks.ts).
+        withWatch: { lit: true },
       },
       // Stay idle until a project scope resolves — no cross-project flash on
       // the initial (scope=null) fire. The { signal } trigger refires once a
@@ -1514,6 +1517,9 @@ export class Grid extends CardListCore<GridConfig> {
         // related) before its title so the parent/child link reads at a glance.
         const rel = relationIcon(row);
         if (rel !== null) cell.append(rel);
+        // The viewer's own watch lists it is on, so a bookmarked task stands out.
+        const marks = watchMarks(row.watch);
+        if (marks !== null) cell.append(marks);
         // The text in its own span so a long title ellipsizes next to the
         // relation symbol.
         const text = document.createElement('span');

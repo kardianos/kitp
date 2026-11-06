@@ -11634,6 +11634,29 @@ textarea.task-comms__form-input {
   }
 }
 
+/* Watch marks: the symbols of the viewer's own lists a card is on, leading
+   its title on the Grid, list rows and Kanban cards (watch/marks.ts). Inline,
+   so a Kanban title still clamps to two lines around them. */
+.watch-marks {
+  display: inline;
+  white-space: nowrap;
+  margin-right: 0.35em;
+  line-height: 1;
+  cursor: default;
+}
+.watch-marks__symbol + .watch-marks__symbol {
+  margin-left: 0.15em;
+}
+.grid-title .watch-marks,
+.card-list__watch {
+  flex: 0 0 auto;
+}
+/* In a flex row the row's gap spaces them. */
+.grid-title .watch-marks,
+.card-list__watch .watch-marks {
+  margin-right: 0;
+}
+
 /* The Watch lists screen: lists on the left, the picked one on the right. */
 .watch-lists {
   display: flex;

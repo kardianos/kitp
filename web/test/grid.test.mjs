@@ -326,6 +326,33 @@ test('Grid: a child task leads its title with a relation symbol keyed to its typ
   assert.equal(soloTitle.textContent, 'API rate limits');
 });
 
+test('Grid: a task on the viewer\'s watch lists leads its title with their symbols', async () => {
+  const row = (id, title, watch) => ({
+    id, card_type_id: '5', card_type_name: 'task', parent_card_id: String(PROJECT_ID), phase: 'active',
+    attributes: { title }, ...(watch ? { watch } : {}),
+  });
+  const { transport, sent } = gridMockTransport([
+    row('305', 'Bookmarked', [{ id: '900', symbol: '★', title: 'Stars' }, { id: '901', symbol: '🔥', title: 'Urgent' }]),
+    row('306', 'Not on a list', null),
+  ]);
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  const grid = mountGrid(api, tree);
+  await settle(dispatcher);
+
+  assert.equal(sent.taskInputs.at(-1).with_watch, true, 'the tasks query asks for the marks');
+  const titleOf = (id) =>
+    visibleGridRows(grid.el).find((r) => r.dataset.cardId === id)
+      .querySelectorAll('[data-grid-col]').find((c) => c.dataset.gridCol === 'attributes.title');
+  const marked = titleOf('305');
+  const marks = marked.querySelector('.watch-marks');
+  assert.ok(marks, 'marks in the title cell');
+  assert.equal(marks.textContent, '★🔥');
+  assert.equal(marked.textContent, '★🔥Bookmarked', 'marks lead the title');
+  assert.equal(titleOf('306').querySelector('.watch-marks'), null);
+  assert.equal(titleOf('306').textContent, 'Not on a list');
+});
+
 test('Grid: tasks query scopes by enclosing-project subtree (project_id), not direct parent_card_id', async () => {
   const { transport, sent } = gridMockTransport();
   const { dispatcher, api } = bootApi(transport);

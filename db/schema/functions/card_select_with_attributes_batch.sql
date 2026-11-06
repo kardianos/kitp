@@ -11,7 +11,7 @@
 -- Per-row pipeline:
 --   1. Decode filters (parent_card_id, card_type_name, where[], tree,
 --      include_deleted, with_personal_sort, routed_to_me, with_approvals,
---      order, limit,
+--      with_watch, order, limit,
 --      offset).
 --   2. Compile the predicate tree (v2 `tree` takes precedence over the
 --      v1 `where[]` flat list) via card_compile_predicate; accumulate
@@ -45,6 +45,8 @@ DECLARE
     _routed_to_me boolean;
     _with_approvals boolean;
     _approvals_select text;
+    _with_watch boolean;
+    _watch_select text;
     _tree jsonb;
     _where jsonb;
     _limit_v int;
@@ -106,6 +108,7 @@ BEGIN
         _with_personal_sort := COALESCE((_raw->>'with_personal_sort')::boolean, false);
         _routed_to_me := COALESCE((_raw->>'routed_to_me')::boolean, false);
         _with_approvals := COALESCE((_raw->>'with_approvals')::boolean, false);
+        _with_watch := COALESCE((_raw->>'with_watch')::boolean, false);
         _tree := _raw->'tree';
         _where := _raw->'where';
         BEGIN
@@ -258,6 +261,16 @@ BEGIN
                 (jsonb_array_length(_params) - 1)::text);
         ELSE
             _approvals_select := 'NULL::jsonb AS approvals';
+        END IF;
+
+        -- Watch marks: the caller's own watch lists each row is on
+        -- (watch_marks; an agent's are its owner's), NULL when none.
+        IF _with_watch THEN
+            _params := _params || jsonb_build_array(account_person(card_select_with_attributes_batch.actor_id));
+            _watch_select := format('watch_marks(c.id, ($1->>%s)::bigint) AS watch',
+                (jsonb_array_length(_params) - 1)::text);
+        ELSE
+            _watch_select := 'NULL::jsonb AS watch';
         END IF;
 
         -- Routed-to-me agent-perspective filter.
@@ -435,6 +448,7 @@ BEGIN
             '  ''deleted_at'', CASE WHEN sub.deleted_at IS NULL THEN NULL ELSE to_jsonb(sub.deleted_at) END, ' ||
             '  ''personal_sort_order'', CASE WHEN sub.personal_sort_order IS NULL THEN NULL ELSE to_jsonb(sub.personal_sort_order) END, ' ||
             '  ''approvals'', sub.approvals, ' ||
+            '  ''watch'', sub.watch, ' ||
             -- A private card (only its owner ever sees one): a personal
             -- view or screen, a watch list (docs/PERSONAL_SCREENS.md).
             '  ''private'', CASE WHEN sub.private_to IS NULL THEN NULL ELSE to_jsonb(true) END ' ||
@@ -444,6 +458,7 @@ BEGIN
             '  la.last_activity_at, ' ||
             '  ' || _personal_sort_select || ', ' ||
             '  ' || _approvals_select || ', ' ||
+            '  ' || _watch_select || ', ' ||
             '  row_number() OVER (ORDER BY ' || _order_clause_inner || ') AS rn ' ||
             'FROM card c JOIN card_type ct ON ct.id = c.card_type_id ' ||
             _personal_sort_join || ' ' ||

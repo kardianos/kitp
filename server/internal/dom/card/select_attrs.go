@@ -73,6 +73,16 @@ type SelectWithAttributesInput struct {
 	WithPersonalSort bool            `json:"with_personal_sort,omitempty" mcp:"desc=when true, LEFT JOIN user_card_sort for the calling actor and expose personal_sort_order on each row; lets clients (e.g. Inbox) sort by the user's own ordering without a separate handler"`
 	RoutedToMe       bool            `json:"routed_to_me,omitempty" mcp:"desc=agent-perspective inbox filter: when true the result is restricted to cards whose user_card_agent row routes them to the calling agent (agent_user_id=actor AND user_id=actor.parent_user_id). Returns no rows when the caller is not an agent."`
 	WithApprovals    bool            `json:"with_approvals,omitempty" mcp:"desc=when true, add each row's approvals: its open approval requests summed as {state, asked, approved, rejected, asked_at, waiting_on_me}; omitted on rows with none"`
+	WithWatch        bool            `json:"with_watch,omitempty" mcp:"desc=when true, add each row's watch: the caller's own watch lists it is on, as [{id, symbol, title}]; omitted on rows on none"`
+}
+
+// WatchMark is one of the caller's own watch lists a row is on
+// (watch_marks): what the Grid, list rows and Kanban cards show by its
+// title. docs/WATCH_LISTS.md.
+type WatchMark struct {
+	ID     int64  `json:"id,string" mcp:"desc=the watch list's card id"`
+	Symbol string `json:"symbol" mcp:"desc=the list's symbol (an emoji or character)"`
+	Title  string `json:"title" mcp:"desc=the list's name"`
 }
 
 // ApprovalSummary is a row's Approvals column (approval_summary): over the
@@ -115,6 +125,9 @@ type CardWithAttrs struct {
 	// Approvals is set only when with_approvals asked for it and the card
 	// has an open approval request.
 	Approvals *ApprovalSummary `json:"approvals,omitempty" mcp:"desc=the task's approvals when with_approvals=true and it has open approval requests"`
+	// Watch is set only when with_watch asked for it and the card is on
+	// one of the caller's own watch lists.
+	Watch []WatchMark `json:"watch,omitempty" mcp:"desc=the caller's own watch lists the card is on when with_watch=true; omitted when on none"`
 }
 
 // SelectWithAttributesOutput is per-input.

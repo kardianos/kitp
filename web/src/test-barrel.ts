@@ -758,6 +758,7 @@ export { isSubmitShortcut, bindSubmitShortcut, submitShortcutHint } from './ui/s
 export { WATCH_SPEC, registerWatchSpecs, sortOrderForSlot, watchItemHref, watchListOptions } from './watch/specs.js';
 export { WatchBar, registerWatchBar, WATCH_LISTS_PATH } from './watch/watch-bar.js';
 export { WatchLists, registerWatchLists, listFromSearch } from './watch/watch-lists.js';
+export { decodeWatchMarks, watchMarks } from './watch/marks.js';
 export { DERIVED_OPTION_SOURCES, derivedOptionTargets } from './filter/attribute-schema.js';
 export { MY_SCREEN_SPEC, registerMyScreenSpecs, scopeFromPredicate, predicateFromScope, scopeSummary, myScreenUrl } from './myscreens/specs.js';
 export { MyScreenSettings, registerMyScreenSettings } from './myscreens/my-screen-settings.js';

@@ -24,6 +24,7 @@
  */
 
 import type { ApprovalSummary } from '../ui/approval-badge.js';
+import type { WatchMark } from '../watch/marks.js';
 
 /* -------------------------------------------------------------------------- */
 /* Card model (the `web/` shape — bigint ids, attribute record).              */
@@ -49,6 +50,9 @@ export interface CardWithAttrs {
   /** The task's open approval requests (the Approvals column) — present only
    *  when the request set `with_approvals` and the card has one open. */
   approvals?: ApprovalSummary;
+  /** The viewer's own watch lists the card is on — present only when the
+   *  request set `with_watch` and it is on one (watch/marks.ts). */
+  watch?: WatchMark[];
   /** A private card — yours alone (a personal view or screen, a watch list;
    *  docs/PERSONAL_SCREENS.md). Only its owner ever receives one. */
   private?: boolean;

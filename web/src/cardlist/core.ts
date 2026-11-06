@@ -111,6 +111,8 @@ export function buildCardListQueries(p: string): QueryBinding[] {
         // A screen showing an approvals column (derived-columns) asks for the
         // rows' open approval requests.
         withApprovals: { from: 'screen.withApprovals' },
+        // Each row's marks for the viewer's own watch lists (watch/marks.ts).
+        withWatch: { lit: true },
         order: { from: `${p}.order` },
         where: { from: `${p}.where` },
         tree: { from: `${p}.tree` },
