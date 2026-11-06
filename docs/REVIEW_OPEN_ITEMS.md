@@ -116,7 +116,10 @@ still open, and what a deployment of those commits needs to know.
   past that, 429. There is no overall limit: a start writes nothing to the
   database (its state is sealed in a cookie), and the overall budget let
   anyone stop every new sign-in (review 2026-11-06 #3). A sign-in started
-  before a restart of a kitpd without `KITP_LINK_SECRET` starts again.
+  before a restart of a kitpd without `KITP_LINK_SECRET` starts again;
+  with two or more kitpd without it, a callback that reaches another one
+  than the start fails (about half of them with two). A deep link that
+  would make the state cookie larger than 3,800 bytes signs in to "/".
 - **`activity.select` with neither a card nor a project** covers the last
   30 days by default and at most 92.
 - **Unfileable mail goes to the IMAP folder `kitp-set-aside`.** Name
@@ -124,7 +127,10 @@ still open, and what a deployment of those commits needs to know.
   such mail in the inbox.
 - **A passing send failure is retried** 6 times over about 4 h 20 min
   (Comm log `send_retry`) before the message is failed; each send has 75
-  seconds, and its result is recorded however long it took.
+  seconds, and its result is recorded however long it took. Every try
+  carries the same Message-ID, so a retry after a lost answer can be
+  dropped as a copy. A webhook's 401, 403 and 404 are retried; only its
+  400 and 422 bounce.
 - **Threads over 100 recipients** (from before the caps) refuse staff
   replies until trimmed to 100, which the thread's recipient chips now
   allow one at a time.
@@ -180,11 +186,13 @@ except as noted below.
   - PDFs are shown inline on the app origin without a sandbox (exposure to
     PDF-viewer bugs); `_files` responses carry two `sandbox` directives.
   - Portal builds hold every rendered page in memory (a few thousand
-    pages is a lot); `POST /api/v1/cas/chunk` has no per-account quota
-    before the reaper's grace runs out.
+    pages is a lot), bounded by 128 MB of page text over the site;
+    `POST /api/v1/cas/chunk` has no per-account quota before the reaper's
+    grace runs out.
   - The MS Graph token cache is keyed by tenant and client, not the
     secret; the ZIP export names every actor's login email; a batch has
-    no cap on sub-requests.
+    no cap on sub-requests (which is also what let a caller stretch round
+    8's #1 and #4 windows to the handler timeout; both are closed).
   - Front-channel logout's `sid` is the same for every app in the
     browser's Entra session: another app's operator holding the user's ID
     token can sign them out of kitp (how the spec works).
@@ -195,27 +203,118 @@ except as noted below.
   `KITP_LINK_SECRET`, else per process). A sign-in in flight across the
   deploy starts again. `oidc_state` gets no new rows; the reaper empties
   it.
-- **A write aimed at a card that didn't exist when it was checked** is
-  refused if the card exists by the time its handler runs (`card_not_found`,
+- **A write aimed at a card that didn't exist when it was checked** fails
+  its batch if the card exists by the time its handler runs, or right
+  after the handler's statement, before any PostRun (`card_not_found`,
   "send it again"): made in between by someone else, or by an earlier
-  sub-request of the same batch. One still missing gets the handler's own
-  answer (`task_not_found` for the forge link hook, as before).
+  sub-request of the same batch or group (round 8 #1: the first fix
+  looked only before the statement). One still missing gets the handler's
+  own answer (`task_not_found` for the forge link hook, as before).
+  `attachment.delete` and `attachment.download_url` find their card
+  through the attachment, so they ask the grant in SQL as well (round 8
+  #4).
 - **Mail accounts and activity sinks are workspace-admin only** through
   every generic write (`attribute.update`, `card.insert` / `delete` /
-  `undelete` / `merge`), as their own screens already were.
+  `undelete` / `merge` / `move`), as their own screens already were.
 - **Naming a person** on a task (originator, assignee) or a thread
   (recipients) needs them to be someone you can see, a member of the
   project, or already named in it. Workspace-wide roles see everyone, so
-  nothing changes for them.
-- **A page's text is at most 512 KB**; one stored larger is published
-  empty with a warning. A portal build counts as failed until it finishes
-  (so a build that dies backs off) and has 2 minutes.
+  nothing changes for them. approval.set's refusal names only such people
+  (anyone else is "person N"), and an import matches assignee emails only
+  against them — another person's address reads as unknown (with
+  `auto_create`, the import makes a new contact). Filed mail matches a
+  person's verified second addresses only for its sender: a Cc of one is
+  a contact, not the user.
+- **A page is capped by what it renders to:** a table of more than 64
+  columns, or past 50,000 cells on the page, shows as its text; a page
+  past 1 MB of text (2 MB with its placeholders), 4 MB as HTML (its
+  `{{< toc >}}`s included), or past the site's 128 MB is published without
+  its text; one over 8 MB with its theme goes out without its text, and
+  the build fails only if it is too large even then (the theme's fault).
+  Writes refuse a page text over 512 KB, and a title over 500 characters
+  on any card (an import reports one as a row error; filing cuts a long
+  subject). Each cap leaves a build warning. A portal build counts as
+  failed until it finishes (so a build that dies backs off), has 2
+  minutes, and stops between pages when they run out.
 - **Email addresses:** codes are HMAC'd (pending codes from before the
   deploy stop working; send a new one), counted per send, and sent only
-  while the account-emails mailbox is enabled. Migration
-  `0043_person_email_orphans` removes the addresses of deleted people and
-  of people with no live login.
+  while the account-emails mailbox is enabled. A send is counted on its
+  own connection before the mail goes out, and requests for one person or
+  one address are taken one at a time, so a batch that fails after
+  sending, or batches sent at once, don't get past the limits (round 8
+  #5). Migration `0043_person_email_orphans` removes the addresses of
+  deleted people and of people with no live login.
 - **Mail from a kitp user's address is never sent on** (`relay_skipped`
-  `sender_is_user`); staff write in kitp.
+  `sender_is_user`); staff write in kitp. A copy names its sender as kitp
+  knows them (their contact's name, or their address), never as the
+  received From's display name says (round 8 #6).
 - **`dev-login`** (`AUTH_MODE=off` only) answers on localhost, loopback
   and the hosts of `KITP_PUBLIC_URL` / `KITP_TRUSTED_ORIGINS`.
+
+## Review round 8 (2026-11-06)
+
+A fresh review of the commits after `823f78e` and the mail-account send
+methods, plus a race sweep (30 findings: 3 high, 8 medium, 19 low). All
+are fixed in the commits after `50c12e9`, except as noted.
+
+### Left open
+
+- `activity.poll` and `comm.unseen_count` keep their id cursors: a row
+  whose transaction commits after a later one's shows a refresh late
+  (UI only). The activity-sink pump reads in transaction order (below).
+- An Idempotency-Key answer is kept when the client hangs up after the
+  commit, but not when `Commit` itself reports an error after the server
+  committed: that needs the answer stored in the request transaction.
+- A moved task's approvals still name the source project's statuses
+  (`approval_from` / `approval_to`); its threads take the destination's
+  comm state of the same phase.
+- `card.insert` of a screen doesn't check its slug or hotkey;
+  `attribute.update` does, under an advisory lock.
+- Postmark's 406 (an inactive recipient) bounces a whole multi-recipient
+  message.
+- `person_email.add` for an address verified on someone else sends
+  nothing, so it can't fail to send and answers a little sooner than a
+  free address does. The per-address limit (5 a day) is shared by everyone
+  who asks, so anyone can use it up and keep the owner from verifying that
+  address for a day.
+- Two concurrent `person_email.add` of one person, or a write that waits
+  behind a `task.move` past `lock_timeout` (5 s), now fail with an error
+  where they used to pass the limits or corrupt data. Rarely, batches that
+  update and move the same cards in opposite orders get Postgres's
+  "deadlock; retry".
+- A worker's template stamp still makes copies of a template's mail
+  accounts, sinks and subscriptions (without their secrets).
+- `send_url` and `send_domain` are readable by every project member through
+  `card.select_with_attributes`, like `smtp_host`; the webhook's secret
+  still guards the endpoint.
+
+### Deploying the fixes
+
+- **Migrations** `0045_cross_project_parent_task` drops stored
+  cross-project `parent_task` / `parent_relationship` links (no history
+  rows). The boot adds `activity.txid` (existing rows stay NULL, read as
+  0) and `activity_sink_state.last_txid`, and builds `idx_activity_txid_id`
+  (not CONCURRENTLY: writes to `activity` wait for it briefly).
+- **Activity sinks read the stream in transaction order:** a digest waits
+  for transactions still open in kitp's database, so a long import holds
+  digests back until it ends, but nothing is skipped. This reads
+  `pg_stat_activity.backend_xid`, which kitp's sessions see because they
+  share its role.
+- **A held IdP signing key stays valid for up to 24 h while the keys
+  endpoint can't be reached;** a refetch that drops it ends it at once.
+- **Threads' lists take a lock** (`card_list_lock`): mail filed while
+  staff reply, two replies at once, or a recipient change during filing
+  wait for one another instead of losing a message.
+- **task.move carries only subtasks of the task's own project;** a
+  subtask elsewhere keeps its link and stays. `card.undelete` drops a
+  `parent_task` now in another project and refuses a card whose other
+  values moved away (`cross_project_ref`). Writes that name a card hold it
+  FOR SHARE, and moves lock what they move.
+- **Mail accounts:** one with no IMAP host isn't polled (it was faulted
+  within the hour). A receive-only one takes no first message
+  (`comm.create`: `cannot_send`) and sends nothing on. `send_secret: ""`
+  clears the secret; an unknown `send_method` reads as none. Test sends
+  share 40 seconds.
+- **Card lists and search** check for a deleted ancestor on the
+  visibility walk they already make (they had doubled in cost).
+
