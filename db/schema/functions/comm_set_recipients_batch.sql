@@ -127,6 +127,10 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- The list is read and written back below, as filing and
+        -- reply.post do theirs: hold the thread first (card_list_lock).
+        PERFORM card_list_lock(ARRAY[_comm_id]);
+
         -- At most 100 people on a thread, the most a reply goes to
         -- (reply.post). A longer list that adds nobody — taking people off
         -- a thread that has more, one at a time in the UI — is fine:

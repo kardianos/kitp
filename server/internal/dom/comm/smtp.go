@@ -238,6 +238,9 @@ func (s *SMTPSender) TickOnce(ctx context.Context) error {
 // and never overlaps the network call.
 type pendingReply struct {
 	attempts int // tries before this one (comm_send_attempt)
+	// messageToken is the claim's Message-ID token (claim; "" for a
+	// random id).
+	messageToken string
 	// messageID is the Message-ID processOne gave the message, stored on
 	// the reply once it is sent (reply_message_id).
 	messageID string
@@ -333,7 +336,7 @@ func (s *SMTPSender) RunOnce(ctx context.Context) error {
 		// Claim it first: with kitpd on more than one replica, two senders
 		// saw the same pending message and both sent it (review 2026-11-03
 		// round 4). A message another sender claimed in between is left to it.
-		attempts, ok, err := s.claim(ctx, r.replyID)
+		attempts, token, ok, err := s.claim(ctx, r.replyID)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -344,6 +347,7 @@ func (s *SMTPSender) RunOnce(ctx context.Context) error {
 			continue
 		}
 		r.attempts = attempts
+		r.messageToken = token
 		if err := s.processOne(ctx, r); err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -391,37 +395,67 @@ var sendBackoff = []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute
 // 2026-11-03 round 5 #3). Under the lock, a status a concurrent sender is
 // writing is read once it commits. Times are the database's (now()), as
 // they are compared with it.
-func (s *SMTPSender) claim(ctx context.Context, replyID int64) (int, bool, error) {
+//
+// The claim looks again at what loadPending chose it by — still pending,
+// not deleted, on a live thread of this account that is not under a deleted
+// card or in an off area, the account not paused — since the batch was
+// read a send or more ago (review 2026-11-06 round 8 L16). It also returns
+// the message's Message-ID token: the same on every try, so a retry after
+// an answer that never came (the provider took it) can be told apart from
+// a new message by the provider, a webhook and the recipient's mailbox
+// (round 8 L7). The token is keyed with the comm secret key, so nobody can
+// work out a message's id from its reply id; "" when that key isn't set.
+func (s *SMTPSender) claim(ctx context.Context, replyID int64) (int, string, bool, error) {
 	b := named.New()
 	b.Set("reply", replyID)
+	b.Set("channel", s.channelID)
 	b.Set("claim_secs", int(sendClaim.Seconds()))
 	q, args, err := b.Compile(`
 		WITH pending AS (
 			SELECT av.card_id
 			FROM attribute_value av
+			JOIN card rb ON rb.id = av.card_id AND rb.deleted_at IS NULL
+			JOIN attribute_value rep ON rep.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'replies')
+			 AND jsonb_typeof(rep.value) = 'array' AND rep.value @> to_jsonb(rb.id)
+			JOIN card cm ON cm.id = rep.card_id AND cm.deleted_at IS NULL
+			JOIN attribute_value cref ON cref.card_id = cm.id
+			 AND cref.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'channel_ref')
+			 AND cref.value = to_jsonb(:channel::bigint)
+			JOIN card ch ON ch.id = :channel::bigint AND ch.deleted_at IS NULL
 			WHERE av.card_id = :reply
 			  AND av.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'delivery_status')
 			  AND av.value = '"pending"'::jsonb
-			FOR UPDATE
+			  AND NOT card_in_off_area(cm.id)
+			  AND NOT card_under_deleted(cm.id)
+			  AND NOT EXISTS (
+			      SELECT 1 FROM attribute_value sv
+			      JOIN attribute_def sd ON sd.id = sv.attribute_def_id AND sd.name = 'channel_status'
+			      WHERE sv.card_id = ch.id AND sv.value IN ('"disabled-admin"'::jsonb, '"disabled-fault"'::jsonb))
+			FOR UPDATE OF av
 		)
 		INSERT INTO comm_send_attempt (reply_id, claimed_until)
 		SELECT p.card_id, now() + make_interval(secs => :claim_secs) FROM pending p
 		ON CONFLICT (reply_id) DO UPDATE SET claimed_until = EXCLUDED.claimed_until
 		WHERE (comm_send_attempt.claimed_until IS NULL OR comm_send_attempt.claimed_until <= now())
 		  AND (comm_send_attempt.next_attempt_at IS NULL OR comm_send_attempt.next_attempt_at <= now())
-		RETURNING attempts
+		RETURNING attempts,
+		          CASE WHEN COALESCE(current_setting('app.comm_secret_key', true), '') = '' THEN ''
+		               ELSE left(encode(hmac(:reply::bigint::text,
+		                   'kitp reply Message-ID ' || current_setting('app.comm_secret_key'), 'sha256'), 'hex'), 32)
+		          END
 	`)
 	if err != nil {
-		return 0, false, fmt.Errorf("smtp sender: claim: compile: %w", err)
+		return 0, "", false, fmt.Errorf("smtp sender: claim: compile: %w", err)
 	}
 	var attempts int
-	if err := s.pool.P.QueryRow(ctx, q, args...).Scan(&attempts); err != nil {
+	var token string
+	if err := s.pool.P.QueryRow(ctx, q, args...).Scan(&attempts, &token); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, false, nil
+			return 0, "", false, nil
 		}
-		return 0, false, fmt.Errorf("smtp sender: claim reply %d: %w", replyID, err)
+		return 0, "", false, fmt.Errorf("smtp sender: claim reply %d: %w", replyID, err)
 	}
-	return attempts, true, nil
+	return attempts, token, true, nil
 }
 
 // retryLater keeps a message pending after a passing failure, to be tried
@@ -533,7 +567,7 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 	}
 	// In-Reply-To and References name the thread's earlier messages, so the
 	// recipient's mail client files this one with them.
-	th := mimeThread{messageID: replyMessageID(r.from)}
+	th := mimeThread{messageID: replyMessageIDFor(r.from, r.messageToken)}
 	if refs, inReplyTo, err := s.loadThreadRefs(ctx, r); err != nil {
 		// Threading is a courtesy too; the message goes without it.
 		s.logger.LogAttrs(ctx, slog.LevelWarn, "smtp sender: load thread references",
@@ -734,6 +768,9 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 		  -- A thread in an area that is switched off waits: its queued
 		  -- replies send once the area is back on (review A3).
 		  AND NOT card_in_off_area(cm.id)
+		  -- So does one on a deleted task (card.undelete brings it back):
+		  -- the claim refuses it, so a batch of them would hold the queue.
+		  AND NOT card_under_deleted(cm.id)
 		  AND ch.deleted_at IS NULL
 		  AND ch.id = :channel_id
 		  -- Not one another sender has claimed, nor one waiting out a
@@ -1179,12 +1216,19 @@ func foldSubject(v string) string {
 
 // replyMessageID is a new Message-ID for a message kitp sends on a thread,
 // at the domain of its From address.
-func replyMessageID(from string) string {
+func replyMessageID(from string) string { return replyMessageIDFor(from, "") }
+
+// replyMessageIDFor is a queued message's Message-ID: from its claim's
+// token (the same on every try), or a new random one when there is none.
+func replyMessageIDFor(from, token string) string {
 	domain := "kitp.invalid"
 	if a, err := ParseAddress(from); err == nil {
 		if at := strings.LastIndexByte(a.Address, '@'); at >= 0 && at < len(a.Address)-1 {
 			domain = strings.ToLower(a.Address[at+1:])
 		}
+	}
+	if token != "" {
+		return fmt.Sprintf("<kitp.%s@%s>", oneLine(token), oneLine(domain))
 	}
 	var b [12]byte
 	if _, err := rand.Read(b[:]); err != nil {

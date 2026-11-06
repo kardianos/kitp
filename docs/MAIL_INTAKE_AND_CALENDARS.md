@@ -700,7 +700,11 @@ Ada ──reply──▶ support@ ──▶ filed on the thread
   verified address of a person with a login) is never sent on
   (`sender_is_user`): kitp users write in kitp (R3), and an unauthenticated
   From could otherwise go out as "Carol via Support" from the account's own
-  address (review 2026-11-06 #8). It is filed as usual.
+  address (review 2026-11-06 #8). It is filed as usual. The copy names the
+  sender as kitp knows them — their person card's title, or their address
+  when the title looks like an address or is a kitp user's name — never the
+  received From's display name, which nobody has checked: "Carol
+  <ada@customer>" went out as "Carol via Support" (round 8 #6).
 
   The sender must be confirmed (`sender_unconfirmed`) and on the thread
   before this message (`sender_not_on_thread`; `processOne` reads the
@@ -829,7 +833,7 @@ POST intake reads, where they offer a sending API of similar weight.
 | S2 | The senders match POST intake's providers: Mailgun and Postmark have sending APIs of the same weight as their inbound webhooks; the raw route's counterpart is the webhook — the raw message POSTed, signed, to an endpoint that sends it (a Cloudflare Worker, a Lambda with Amazon SES, a script). kitp never sends straight to recipients' mail servers: that takes its own IP reputation, reverse DNS, DKIM signing and retry queues. |
 | S3 | **Threading goes out unchanged.** Every sender builds the whole MIME message as before; SMTP, Mailgun (`messages.mime`) and the webhook carry those bytes as they are. Postmark takes JSON: the message is read back into its fields, and Message-ID, In-Reply-To, References and the other headers go in `Headers`. |
 | S4 | One secret per account (`comm_secret.send_secret`): Mailgun's API key, Postmark's server token, or the webhook's signing secret, write-only like the passwords. Changing the method without a new secret clears it — another provider's key is no use. |
-| S5 | Every way kitp sends uses the account's way out: replies (and relayed copies), digests and notifications, account emails (address codes). An account with no way out fails a queued reply at once (`send_fail`, "no way out"), not after retries. |
+| S5 | Every way kitp sends uses the account's way out: replies (and relayed copies), digests and notifications, account emails (address codes). An account with no way out fails a queued reply at once (`send_fail`, "no way out"), not after retries. A receive-only account (`none`) takes no reply and no first message (`reply.post`, `comm.create`: `cannot_send`), and the relay sends nothing on through an account that can't send (`relay_skipped`, `cannot_send`). An account that doesn't poll (no IMAP host) is left alone by the poller: it doesn't count as a failed poll (round 8 #3, which faulted such accounts within the hour). |
 | S6 | The setup page says whether the account is **complete** (a way in and a way out), **receive only**, **send only** or **not set up**, and has **Send a test message**. |
 
 ### Sending
@@ -856,10 +860,19 @@ reply / digest / code ──▶ the whole MIME message ──▶ the account's w
   IMAP), follows no redirect, and has 60 seconds.
 - Answers: a 2xx is sent. A refusal of the message itself bounces it
   (`bounced`, `send_bounce`) — Mailgun 400, Postmark 422 with ErrorCode 300
-  or 406, a webhook 4xx other than 408 / 429. Anything else (the account's
-  key or domain, 429, 5xx, a redirect, a network error) is tried again like
-  an SMTP 4xx. The provider's answer is clipped into the Comm log; a secret
-  never is.
+  or 406, a webhook 400 or 422. Anything else (the account's key or domain,
+  a webhook's 401 / 403 / 404 — a bad signature, a rotated secret, a clock
+  out by minutes — 408, 429, 5xx, a redirect, a network error) is tried
+  again like an SMTP 4xx. The provider's answer is clipped into the Comm
+  log; a secret never is.
+- Every try of one message carries the same Message-ID (from its claim:
+  an HMAC of the reply id under the comm secret key), so a retry after an
+  answer that never came — the provider took it — can be dropped as a
+  copy by the provider, the endpoint or the recipient's mailbox. The claim
+  also looks again at what the message was loaded by (still pending, its
+  thread live and not under a deleted card or an off area, the account not
+  paused).
+- Names and subjects decoded for Postmark's JSON are put on one line.
 
 ### The webhook
 
@@ -875,8 +888,10 @@ kitp POSTs each message to `send_url`:
 
 The endpoint checks the signature (in constant time) and refuses a
 timestamp more than five minutes off; then sends the message. Answer 2xx
-when it is sent (or queued), another 4xx to refuse this message for good,
-5xx to have kitp try again. A Cloudflare Worker, in outline:
+when it is sent (or queued), 400 or 422 to refuse this message for good;
+anything else — the 401 below for a bad signature or a stale time included
+— has kitp try it again (the same Message-ID each time). A Cloudflare
+Worker, in outline:
 
 ```js
 export default {
@@ -923,7 +938,9 @@ cards.
 
 **Send a test message** (`comm_channel.test_send`, admin) mails you through
 the account's way out and says where it went; the Comm log has `send_test`
-with the answer. The layout is RecordForm data on the field table —
+with the answer, written on its own connection so it stays when the call
+fails. The sends of one call share 40 seconds: they run inside the
+request's transaction, which the pool ends after 60 idle seconds. The layout is RecordForm data on the field table —
 `heading` sections, `prominent`, `indent`, `column`, `hintByValue`,
 `control`, `details`, `standalone`, a readonly's `toneField` — not code in
 the form.

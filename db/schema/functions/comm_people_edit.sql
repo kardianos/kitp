@@ -21,6 +21,7 @@ BEGIN
         RAISE EXCEPTION 'comm_people_edit: attribute_def % missing', comm_people_edit.def_name
             USING ERRCODE = 'P0001';
     END IF;
+    PERFORM card_list_lock(ARRAY[comm_people_edit.comm_id]);
     SELECT av.value INTO _old
     FROM attribute_value av
     WHERE av.card_id = comm_people_edit.comm_id AND av.attribute_def_id = _def;

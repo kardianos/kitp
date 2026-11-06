@@ -161,6 +161,9 @@ BEGIN
                 NULL::jsonb;
             CONTINUE;
         END IF;
+        -- The thread's lists (replies, comm_recipients) are read and
+        -- written back below: hold the thread first (card_list_lock).
+        PERFORM card_list_lock(ARRAY[_comm_id]);
         -- 2b. A thread sends from a live mail account of its own project
         --     (task.move gives a moved task's threads the destination's).
         --     Without one the reply would sit unsent, or go out through

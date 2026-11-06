@@ -108,8 +108,9 @@ type ChannelSetInput struct {
 	SendStream string `json:"send_stream,omitempty" mcp:"desc=Postmark: the message stream (empty = outbound)"`
 	SendURL    string `json:"send_url,omitempty" mcp:"desc=webhook: the https:// endpoint kitp POSTs each message to"`
 	// SendSecret is Mailgun's API key, Postmark's server token or the
-	// webhook's signing secret: write-only, omitted leaves the stored one.
-	SendSecret *string `json:"send_secret,omitempty" mcp:"desc=Mailgun API key / Postmark server token / webhook signing secret; omit to leave unchanged; encrypted at rest"`
+	// webhook's signing secret: write-only, omitted leaves the stored one,
+	// "" clears it.
+	SendSecret *string `json:"send_secret,omitempty" mcp:"desc=Mailgun API key / Postmark server token / webhook signing secret; omit to leave unchanged, empty string clears it; encrypted at rest"`
 }
 
 // ChannelSetOutput surfaces the channel card id so the caller can chain.
@@ -388,7 +389,9 @@ func Register(p *store.Pool) {
 		// The SQL checks the account and finds the address; the message
 		// goes out here, in the request (a failure fails the call).
 		PostRun: sendTestMessages,
-		Timeout: 90 * time.Second,
+		// The sends share testSendBudget (40 s), under the pool's 60 s
+		// idle-in-transaction limit; the rest is the SQL and the log.
+		Timeout: 50 * time.Second,
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "comm_channel",
@@ -783,13 +786,34 @@ func uniqueThreadID(ctx context.Context, tx store.Querier) (string, error) {
 	return "", fmt.Errorf("comm.create: failed to generate unique thread_id after 5 attempts")
 }
 
+// lockCardLists takes card_list_lock on the cards: the lock every
+// read-modify-write of a card's kitp-kept lists (a thread's replies and
+// people, a task's comms) takes before it reads, so a second writer waits
+// for the first to commit and then reads its list (review 2026-11-06 round
+// 8 #2). Held until the transaction ends.
+func lockCardLists(ctx context.Context, tx store.Querier, cardIDs ...int64) error {
+	b := named.New()
+	b.Set("ids", cardIDs)
+	q, args, err := b.Compile(`SELECT card_list_lock(:ids::bigint[])`)
+	if err != nil {
+		return fmt.Errorf("comm: lock lists: compile: %w", err)
+	}
+	if _, err := tx.Exec(ctx, q, args...); err != nil {
+		return fmt.Errorf("comm: lock lists: %w", err)
+	}
+	return nil
+}
+
 // appendCardRefList reads the current value of a card_ref[] attribute
 // on cardID, appends appendID to it, and writes it back via the same
-// activity + attribute_value path.
+// activity + attribute_value path, holding the card's list lock.
 func appendCardRefList(ctx context.Context, tx store.Querier, cardID int64, attrName string, appendID int64, snap *schema.Snapshot, actorID int64) error {
 	ad, ok := snap.AttrByName[attrName]
 	if !ok {
 		return fmt.Errorf("comm: append: attribute_def %q missing", attrName)
+	}
+	if err := lockCardLists(ctx, tx, cardID); err != nil {
+		return err
 	}
 	cur, _, err := readAttributeValueRaw(ctx, tx, cardID, attrName)
 	if err != nil {

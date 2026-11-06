@@ -48,6 +48,7 @@ BEGIN
         RETURN false;
     END IF;
 
+    PERFORM card_list_lock(ARRAY[comm_author_join.comm_id]);
     SELECT av.value INTO _old
     FROM attribute_value av
     WHERE av.card_id = comm_author_join.comm_id

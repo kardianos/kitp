@@ -56,6 +56,8 @@ BEGIN
             JOIN card cm ON cm.id = rep.card_id AND cm.deleted_at IS NULL   -- the comm
             WHERE rb.deleted_at IS NULL
               AND NOT card_in_off_area(cm.id)
+              -- A thread on a deleted task left the Comms screen with it.
+              AND NOT card_under_deleted(cm.id)
               AND EXISTS (
                   SELECT 1
                   FROM user_account caller

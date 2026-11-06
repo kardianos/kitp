@@ -122,6 +122,9 @@ func mergeCommRecipients(
 	if len(add) == 0 {
 		return 0, 0, nil
 	}
+	if err := lockCardLists(ctx, tx, commID); err != nil {
+		return 0, 0, err
+	}
 	cur, _, err := readAttributeValueRaw(ctx, tx, commID, "comm_recipients")
 	if err != nil {
 		return 0, 0, err

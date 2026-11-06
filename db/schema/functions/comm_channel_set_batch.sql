@@ -270,9 +270,10 @@ BEGIN
                 'comm_channel.set: send_url must be an https:// URL'::text, NULL::jsonb;
             CONTINUE;
         END IF;
-        IF _send_set AND (_send_secret = '' OR length(_send_secret) > 1024) THEN
+        -- An explicit "" clears it, as with the passwords.
+        IF _send_set AND length(_send_secret) > 1024 THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
-                'comm_channel.set: send_secret must be 1 to 1024 characters'::text, NULL::jsonb;
+                'comm_channel.set: send_secret is at most 1024 characters'::text, NULL::jsonb;
             CONTINUE;
         END IF;
 
@@ -427,7 +428,7 @@ BEGIN
             CASE WHEN _smtp_set
                  THEN pgp_sym_encrypt(_smtp_pwd, current_setting('app.comm_secret_key'))
                  ELSE NULL END,
-            CASE WHEN _send_set
+            CASE WHEN _send_set AND _send_secret <> ''
                  THEN pgp_sym_encrypt(_send_secret, current_setting('app.comm_secret_key'))
                  ELSE NULL END
         )
@@ -443,6 +444,7 @@ BEGIN
                      ELSE NULL END,
                 comm_secret.smtp_password),
             send_secret = CASE
+                WHEN _send_set AND _send_secret = '' THEN NULL
                 WHEN _send_set THEN pgp_sym_encrypt(_send_secret, current_setting('app.comm_secret_key'))
                 WHEN _send_method <> '' AND _send_method <> _old_method THEN NULL
                 ELSE comm_secret.send_secret END,

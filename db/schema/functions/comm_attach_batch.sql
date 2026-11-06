@@ -197,10 +197,7 @@ BEGIN
         END IF;
 
         -- Lock the tasks whose comms lists change, in id order.
-        PERFORM 1 FROM card
-        WHERE id IN (_old_parent, _task_id) AND id <> 0
-        ORDER BY id
-        FOR UPDATE;
+        PERFORM card_list_lock(ARRAY[_old_parent, _task_id]);
 
         -- 5. Leave the old task's comms list.
         IF _old_parent_type = 'task' THEN

@@ -483,6 +483,16 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 		return fmt.Errorf("imap poller: load config: %w", err)
 	}
 	projectID := intake.projectID
+	// No mailbox to poll: "Poll a mailbox (IMAP)" is off, or the account
+	// sends only, or takes its mail through POST / SMTP routes. Nothing to
+	// dial and nothing failed — counting it as a failed poll faulted the
+	// whole account within the hour, which stops its sending and its
+	// routes too (review 2026-11-06 round 8 #3).
+	if strings.TrimSpace(cfg.Host) == "" {
+		p.logger.LogAttrs(ctx, slog.LevelDebug, "imap skip: no mailbox to poll",
+			slog.Int64("channel_id", p.channelID))
+		return nil
+	}
 
 	// Config snapshot (no secrets). The common "no new tasks" cause shows
 	// up here: intake_mode=ignore means every non-reply message is dropped

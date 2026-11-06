@@ -42,6 +42,12 @@ var (
 // result goes in the account's Comm log (send_test); a failure fails the
 // call with a fixed message (the log has the provider's answer).
 func sendTestMessages(ctx context.Context, tx store.Querier, ins []any, outs []any) error {
+	// The sends run inside the request's transaction, which the pool ends
+	// once it has been idle 60 s (idle_in_transaction_session_timeout):
+	// all of them share one budget under that, as the scheduler keeps its
+	// own runs at 45 s (review 2026-11-06 round 8 L8).
+	sendCtx, cancel := context.WithTimeout(ctx, testSendBudget)
+	defer cancel()
 	for i := range outs {
 		out, ok := outs[i].(ChannelTestSendOutput)
 		if !ok {
@@ -60,27 +66,43 @@ func sendTestMessages(ctx context.Context, tx store.Querier, ins []any, outs []a
 			slog.Default().LogAttrs(ctx, slog.LevelInfo, "comm_channel.test_send: dry run, not sent",
 				slog.Int64("channel_id", cfg.ChannelID), slog.Int("bytes", len(msg)))
 		} else {
-			sendCtx, cancel := context.WithTimeout(ctx, 75*time.Second)
 			sendErr = Deliver(sendCtx, cfg.Outbound(), testSendSMTP, testSendAPI, plainFrom(cfg.From), out.To, msg)
-			cancel()
 		}
 		var partial *SMTPPartialError
-		if sendErr != nil && !errors.As(sendErr, &partial) {
+		failed := sendErr != nil && !errors.As(sendErr, &partial)
+		detail["ok"] = !failed
+		if failed {
 			detail["error"] = sendErr.Error()
-			detail["ok"] = false
-			// The request's transaction rolls back with the failure: the
-			// row goes in on its own.
-			if authzPool != nil {
-				if lerr := LogEvent(context.WithoutCancel(ctx), authzPool.P, cfg.ProjectID, cfg.ChannelID, "send_test", detail); lerr != nil {
-					slog.Default().LogAttrs(ctx, slog.LevelWarn, "comm_channel.test_send: log a failed test", slog.String("error", lerr.Error()))
-				}
+		}
+		// What went out stays in the log: the row goes in on its own
+		// connection, so a failure later in the batch — this one, or
+		// another input's — doesn't roll it back.
+		if err := logTestSend(ctx, tx, cfg, detail); err != nil {
+			if !failed {
+				return err
 			}
+			slog.Default().LogAttrs(ctx, slog.LevelWarn, "comm_channel.test_send: log a failed test", slog.String("error", err.Error()))
+		}
+		if failed {
 			return &reg.HandlerError{Code: "send_failed", Message: "the test message couldn't be sent; the mail account's Comm log (send_test) has the reason", InputIndex: i}
 		}
-		detail["ok"] = true
-		if err := LogEvent(ctx, tx, cfg.ProjectID, cfg.ChannelID, "send_test", detail); err != nil {
-			return fmt.Errorf("comm_channel.test_send: log: %w", err)
-		}
+	}
+	return nil
+}
+
+// testSendBudget is the time all of one call's test sends share (L8).
+const testSendBudget = 40 * time.Second
+
+// logTestSend writes a send_test row to the account's Comm log, on the
+// pool's own connection when there is one (else in the request).
+func logTestSend(ctx context.Context, tx store.Querier, cfg SMTPConfig, detail map[string]any) error {
+	var q store.Querier = tx
+	if authzPool != nil {
+		q = authzPool.P
+		ctx = context.WithoutCancel(ctx)
+	}
+	if err := LogEvent(ctx, q, cfg.ProjectID, cfg.ChannelID, "send_test", detail); err != nil {
+		return fmt.Errorf("comm_channel.test_send: log: %w", err)
 	}
 	return nil
 }

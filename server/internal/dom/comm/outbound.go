@@ -48,11 +48,16 @@ const (
 // ResolveSendMethod reads a stored send_method: an account from before the
 // setting has none, which is SMTP (what it always used).
 func ResolveSendMethod(v string) string {
-	switch v {
-	case SendMethodMailgun, SendMethodPostmark, SendMethodWebhook, SendMethodNone:
+	switch v = strings.TrimSpace(v); v {
+	case "", SendMethodSMTP:
+		return SendMethodSMTP
+	case SendMethodMailgun, SendMethodPostmark, SendMethodWebhook:
 		return v
 	}
-	return SendMethodSMTP
+	// 'none', or a value comm_channel.set wouldn't take (written by hand):
+	// no way out, as channel_can_send says (review 2026-11-06 round 8,
+	// worth a look).
+	return SendMethodNone
 }
 
 // Outbound is how a mail account sends, its secrets decrypted.
@@ -79,13 +84,13 @@ type Outbound struct {
 func (o Outbound) Ready() bool {
 	switch o.Method {
 	case SendMethodSMTP:
-		return o.Host != ""
+		return strings.TrimSpace(o.Host) != ""
 	case SendMethodMailgun:
-		return o.Domain != "" && o.Secret != ""
+		return strings.TrimSpace(o.Domain) != "" && o.Secret != ""
 	case SendMethodPostmark:
 		return o.Secret != ""
 	case SendMethodWebhook:
-		return o.URL != "" && o.Secret != ""
+		return strings.TrimSpace(o.URL) != "" && o.Secret != ""
 	}
 	return false
 }
@@ -313,9 +318,9 @@ func postmarkFromMIME(msg []byte, to, stream string) (postmarkMessage, error) {
 		}
 	}
 	if s, err := dec.DecodeHeader(m.Header.Get("Subject")); err == nil {
-		out.Subject = s
+		out.Subject = plainLine(s)
 	} else {
-		out.Subject = m.Header.Get("Subject")
+		out.Subject = plainLine(m.Header.Get("Subject"))
 	}
 	keys := make([]string, 0, len(m.Header))
 	for k := range m.Header {
@@ -336,12 +341,24 @@ func postmarkFromMIME(msg []byte, to, stream string) (postmarkMessage, error) {
 	return out, nil
 }
 
-// postmarkAddress is a, its name raw UTF-8 and quoted (Postmark's form).
+// postmarkAddress is a, its name raw UTF-8 and quoted (Postmark's form),
+// on one line.
 func postmarkAddress(a *mail.Address) string {
-	if a.Name == "" {
+	name := plainLine(a.Name)
+	if name == "" {
 		return a.Address
 	}
-	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(a.Name) + `" <` + a.Address + ">"
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(name) + `" <` + a.Address + ">"
+}
+
+// plainLine is s with its control characters (CR and LF among them) made
+// spaces: a decoded RFC 2047 name or subject can carry them, and Postmark
+// takes these fields raw — a relay copy's name came from an outsider's
+// From (review 2026-11-06 round 8 L9).
+func plainLine(s string) string {
+	return strings.TrimSpace(strings.Join(strings.FieldsFunc(s, func(r rune) bool {
+		return r < 0x20 || r == 0x7f
+	}), " "))
 }
 
 // postmarkBody walks a part: text/plain and text/html (not attachments)
@@ -373,7 +390,12 @@ func postmarkBody(out *postmarkMessage, h textproto.MIMEHeader, r io.Reader, dep
 	if err != nil {
 		return fmt.Errorf("read a part: %w", err)
 	}
-	disp, dparams, _ := mime.ParseMediaType(h.Get("Content-Disposition"))
+	// A missing or odd Content-Disposition is an inline part: disp stays
+	// "" and the part is read as a body when its type is text.
+	disp, dparams, err := mime.ParseMediaType(h.Get("Content-Disposition"))
+	if err != nil {
+		disp, dparams = "", map[string]string{}
+	}
 	switch {
 	case disp != "attachment" && ct == "text/plain" && out.TextBody == "":
 		out.TextBody = string(data)
@@ -387,6 +409,7 @@ func postmarkBody(out *postmarkMessage, h textproto.MIMEHeader, r io.Reader, dep
 		if d, err := new(mime.WordDecoder).DecodeHeader(name); err == nil {
 			name = d
 		}
+		name = plainLine(name)
 		if name == "" {
 			name = "attachment"
 		}
@@ -438,9 +461,13 @@ func sendWebhook(ctx context.Context, o Outbound, from, to string, msg []byte) e
 		return fmt.Errorf("webhook: %w", err)
 	}
 	defer resp.Body.Close()
-	// A 4xx is the endpoint refusing this message (but 408 and 429 pass);
-	// a 5xx or a redirect is tried again.
+	// 400 and 422 are the endpoint refusing this message, for good. Any
+	// other answer — 401 or 403 (a bad signature: a rotated secret, a
+	// clock out by minutes), 404, 408, 429, a 5xx, a redirect — is tried
+	// again, as Mailgun's are: bouncing on those marked every reply
+	// bounced while the endpoint was misconfigured (review 2026-11-06
+	// round 8 L6).
 	return apiAnswer("webhook", resp, func(status int, _ []byte) bool {
-		return status >= 400 && status < 500 && status != http.StatusRequestTimeout && status != http.StatusTooManyRequests
+		return status == http.StatusBadRequest || status == http.StatusUnprocessableEntity
 	})
 }

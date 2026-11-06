@@ -78,7 +78,6 @@ func TestAMailAccountChoosesHowItSends(t *testing.T) {
 		`"send_method":"webhook","send_url":"https://user:pw@mail.example.com/","send_secret":"s"`,
 		`"send_method":"mailgun","send_domain":"not a domain"`,
 		`"send_method":"mailgun","send_region":"asia"`,
-		`"send_secret":""`,
 	} {
 		body := fmt.Sprintf(`{"id":"%d","project_id":"%d","name":"Support","channel_type":"email",%s}`, ch, f.projectID, bad)
 		if e := dispatchExpectErr(t, f, api.SubRequest{ID: "s", Endpoint: "comm_channel", Action: "set", Data: json.RawMessage(body)}); e.Code != "validation" {
@@ -89,6 +88,12 @@ func TestAMailAccountChoosesHowItSends(t *testing.T) {
 	if r := channelRow(t, f, ch); r.SendURL != "https://mail-out.example.com/kitp" || !r.CanSend {
 		t.Errorf("after the webhook: %+v", r)
 	}
+	// An explicit "" clears the secret, as with the passwords.
+	setChannel(t, f, ch, `"send_secret":""`)
+	if r := channelRow(t, f, ch); r.HasSendSecret || r.CanSend {
+		t.Errorf("send_secret \"\" left has_send_secret %v can_send %v", r.HasSendSecret, r.CanSend)
+	}
+	setChannel(t, f, ch, `"send_secret":"s3cret"`)
 	// Polling off: the IMAP settings go.
 	setChannel(t, f, ch, `"imap_enabled":false`)
 	if r := channelRow(t, f, ch); r.IMAPHost != "" || r.IMAPUsername != "" || r.HasIMAPPassword {

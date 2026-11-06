@@ -249,6 +249,18 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- 4c. A first message goes out through the account, so one that
+        --     doesn't send (Send with: doesn't send) takes none, as reply.post
+        --     refuses a reply (review 2026-11-06 round 8 L5); it would only be
+        --     failed. approval.set's email request comes through here too.
+        IF _initial_message <> '' AND EXISTS (
+            SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'send_method'
+            WHERE av.card_id = _channel_id AND av.value = to_jsonb('none'::text)) THEN
+            RETURN QUERY SELECT _idx, false, 'cannot_send'::text,
+                'comm.create: this mail account doesn''t send (Comm Channels → Sending)'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+
         -- 5. comm_status default from the project's comm flow.
         SELECT COALESCE(default_create_status_id, 0)
           INTO _default_status_id
@@ -424,6 +436,7 @@ BEGIN
         -- 10. Append _comm_id to task.comms. Tolerate legacy
         --     string-form ids in the stored array and canonicalise to
         --     numbers on write (same pattern reply_post_batch uses).
+        PERFORM card_list_lock(ARRAY[_task_id]);
         SELECT av.value INTO _old_comms
         FROM attribute_value av
         JOIN attribute_def ad ON ad.id = av.attribute_def_id

@@ -137,19 +137,14 @@ func senderOf(from string) string {
 	return ""
 }
 
-// relaySenderName is the name on a copy's From: the sender's display name,
-// else their address, "via" the account's name (its address when unnamed).
-func relaySenderName(from, accountName, accountAddr string) string {
-	who := ""
-	p := mail.AddressParser{WordDecoder: headerDecoder}
-	if a, err := p.Parse(from); err == nil {
-		who = strings.TrimSpace(a.Name)
-		if who == "" {
-			who = a.Address
-		}
-	} else {
-		who = strings.TrimSpace(decodeHeaderText(from))
-	}
+// relaySenderName is the name on a copy's From: who sent it, "via" the
+// account's name (its address when unnamed). who is kitp's own name for
+// the sender (threadConfirmed: their person card's title), else their
+// address — never the received From's display name, which nobody has
+// checked: "Carol <ada@customer>" went out as "Carol via Support" from the
+// organisation's own address (review 2026-11-06 round 8 #6).
+func relaySenderName(who, accountName, accountAddr string) string {
+	who = plainLine(who)
 	via := strings.TrimSpace(accountName)
 	if via == "" {
 		via = accountAddr
@@ -239,6 +234,20 @@ func (p *filer) relayReplyTx(ctx context.Context, tx store.Querier, snap *schema
 	if accountAddr == "" {
 		return skip("no_from_address")
 	}
+	// An account with no way out (Send with: doesn't send, or a method
+	// missing its settings) would only have the copy failed (review
+	// 2026-11-06 round 8 L5).
+	canSend, err := namedRow(ctx, tx, `SELECT channel_can_send(:account)`, map[string]any{"account": account})
+	if err != nil {
+		return fmt.Errorf("relay: can send: %w", err)
+	}
+	var ok bool
+	if err := canSend.Scan(&ok); err != nil {
+		return fmt.Errorf("relay: can send: %w", err)
+	}
+	if !ok {
+		return skip("cannot_send")
+	}
 	own := strings.ToLower(accountAddr)
 	sender := senderOf(m.From)
 	if sender == "" {
@@ -300,7 +309,11 @@ func (p *filer) relayReplyTx(ctx context.Context, tx store.Querier, snap *schema
 	if len(to) > maxRelayRecipients {
 		return skip("too_many_recipients")
 	}
-	from := (&mail.Address{Name: relaySenderName(m.From, accountName, accountAddr), Address: accountAddr}).String()
+	who := confirmed[sender]
+	if who == "" {
+		who = sender
+	}
+	from := (&mail.Address{Name: relaySenderName(who, accountName, accountAddr), Address: accountAddr}).String()
 	copyID, leftOff, err := queueRelayCopy(ctx, tx, snap, commID, replyID, from, strings.Join(to, ", "), m, actorID)
 	if err != nil {
 		return err
@@ -345,19 +358,32 @@ func threadAccount(ctx context.Context, tx store.Querier, commID, receivedOn int
 	return account, in.relay, nil
 }
 
-// threadConfirmed is the lowercased addresses of the people kitp has
-// confirmed on a thread: those comm_confirmed names (added by a person in
+// threadConfirmed maps the lowercased addresses of the people kitp has
+// confirmed on a thread to kitp's name for each (or ""): those comm_confirmed names (added by a person in
 // kitp, or who started the thread by mail — comm_confirm). Nothing a
 // received message says counts — its From, To and Cc aren't authenticated
 // (review 2026-11-03 round 2 #1) — and neither does a staff reply: reply.post
 // writes to everyone on the thread, including whoever a received message
 // put there, so "staff wrote to them" isn't a choice anyone made (round 3
 // #5). Taking someone off the thread unconfirms them (comm_remove).
-func threadConfirmed(ctx context.Context, tx store.Querier, commID int64) (map[string]struct{}, error) {
+func threadConfirmed(ctx context.Context, tx store.Querier, commID int64) (map[string]string, error) {
 	b := named.New()
 	b.Set("comm", commID)
+	// The name is the person card's title, as kitp knows them — blank when
+	// it looks like an address or is a kitp user's name (a person card
+	// made from a received From can carry whatever that From said), so
+	// the copy then names the bare address.
 	q, args, err := b.Compile(`
-		SELECT lower(btrim(pav.value #>> '{}'))
+		SELECT lower(btrim(pav.value #>> '{}')),
+		       CASE WHEN n.name = '' OR n.name LIKE '%@%'
+		              OR EXISTS (SELECT 1 FROM user_account ua WHERE lower(btrim(ua.display_name)) = lower(n.name))
+		              OR EXISTS (
+		                  SELECT 1 FROM user_account_person uap
+		                  JOIN attribute_value utv ON utv.card_id = uap.person_card_id
+		                  JOIN attribute_def utd ON utd.id = utv.attribute_def_id AND utd.name = 'title'
+		                  WHERE uap.person_card_id <> pc.id
+		                    AND lower(btrim(utv.value #>> '{}')) = lower(n.name))
+		            THEN '' ELSE n.name END
 		FROM attribute_value av
 		JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'comm_confirmed'
 		CROSS JOIN LATERAL jsonb_array_elements(
@@ -366,6 +392,11 @@ func threadConfirmed(ctx context.Context, tx store.Querier, commID int64) (map[s
 		            AND pc.deleted_at IS NULL
 		JOIN attribute_value pav ON pav.card_id = pc.id
 		JOIN attribute_def pad ON pad.id = pav.attribute_def_id AND pad.name = 'email'
+		CROSS JOIN LATERAL (
+			SELECT COALESCE(btrim((
+				SELECT tv.value #>> '{}' FROM attribute_value tv
+				JOIN attribute_def td ON td.id = tv.attribute_def_id AND td.name = 'title'
+				WHERE tv.card_id = pc.id)), '') AS name) n
 		WHERE av.card_id = :comm
 	`)
 	if err != nil {
@@ -376,14 +407,14 @@ func threadConfirmed(ctx context.Context, tx store.Querier, commID int64) (map[s
 		return nil, fmt.Errorf("thread confirmed: %w", err)
 	}
 	defer rows.Close()
-	out := map[string]struct{}{}
+	out := map[string]string{}
 	for rows.Next() {
-		var person string
-		if err := rows.Scan(&person); err != nil {
+		var person, name string
+		if err := rows.Scan(&person, &name); err != nil {
 			return nil, fmt.Errorf("thread confirmed: scan: %w", err)
 		}
 		if person != "" {
-			out[person] = struct{}{}
+			out[person] = name
 		}
 	}
 	if err := rows.Err(); err != nil {

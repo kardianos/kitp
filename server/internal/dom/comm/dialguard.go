@@ -70,7 +70,9 @@ var ipResolver = func(ctx context.Context, host string) ([]net.IP, error) {
 // 198.18/15, "this network" 0/8, reserved 240/4, IETF 192.0.0/24, and
 // IPv4-compatible ::/96 such as ::a9fe:a9fe), and a NAT64 address
 // (64:ff9b::/96) is judged by the IPv4 address it carries (review
-// 2026-11-06 L3).
+// 2026-11-06 L3). The local-use NAT64 prefix 64:ff9b:1::/48 (RFC 8215)
+// carries its IPv4 address where an operator chooses, so it is refused
+// whole (round 8, worth a look).
 func isBlockedIP(ip net.IP) bool {
 	if nat64.Contains(ip) && ip.To4() == nil {
 		return isBlockedIP(net.IP(ip[12:16]).To16())
@@ -92,7 +94,7 @@ func isBlockedIP(ip net.IP) bool {
 }
 
 var (
-	blockedNets = mustCIDRs("0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "198.18.0.0/15", "240.0.0.0/4", "::/96")
+	blockedNets = mustCIDRs("0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "198.18.0.0/15", "240.0.0.0/4", "::/96", "64:ff9b:1::/48")
 	nat64       = mustCIDRs("64:ff9b::/96")[0]
 )
 
