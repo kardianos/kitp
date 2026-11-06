@@ -16,6 +16,7 @@ package comm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -48,17 +49,51 @@ func IsNotificationReply(m InboundMessage) bool {
 	return notificationRefRegex.MatchString(m.InReplyTo) || notificationRefRegex.MatchString(m.References)
 }
 
-// SMTPConfig is one comm_channel's outbound settings, password decrypted.
+// SMTPConfig is one comm_channel's outbound settings, secrets decrypted:
+// its send method (docs/MAIL_INTAKE_AND_CALENDARS.md, "Sending") and what
+// that needs — the SMTP server, or an HTTP API's settings and secret.
 type SMTPConfig struct {
 	ChannelID   int64
 	ProjectID   int64
 	ChannelName string
 	Status      string
+	Method      string // ResolveSendMethod'd
 	Host        string
 	Port        int
 	Username    string
 	Password    string
 	From        string
+	Domain      string
+	Region      string
+	Stream      string
+	URL         string
+	Secret      string
+}
+
+// Outbound is c's way out.
+func (c SMTPConfig) Outbound() Outbound {
+	return Outbound{
+		Method: c.Method, Host: c.Host, Port: c.Port, Username: c.Username, Password: c.Password,
+		Domain: c.Domain, Region: c.Region, Stream: c.Stream, URL: c.URL, Secret: c.Secret,
+	}
+}
+
+// ErrNoWayOut: the mail account has no send method set up (Sending), so
+// nothing can go out through it.
+var ErrNoWayOut = errors.New("comm: the mail account has no way out (its Sending isn't set up)")
+
+// Deliver sends msg — envelope from, recipients (a comma list), the whole
+// MIME message — through o: its SMTP server with smtp, or its HTTP API
+// with api (the callers' transports, which tests replace). ErrNoWayOut when
+// o can't send.
+func Deliver(ctx context.Context, o Outbound, smtp SMTPTransport, api APITransport, from, to string, msg []byte) error {
+	if !o.Ready() {
+		return ErrNoWayOut
+	}
+	if o.IsAPI() {
+		return api(ctx, o, from, to, msg)
+	}
+	return smtp(ctx, o.Host, o.Port, o.Username, o.Password, from, to, msg)
 }
 
 // LoadSMTPConfig reads a live comm_channel's SMTP settings in one query
@@ -77,7 +112,14 @@ func LoadSMTPConfig(ctx context.Context, q PoolQuerier, channelID int64) (SMTPCo
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='smtp_username'), ''),
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='from_address'), ''),
 			COALESCE((SELECT pgp_sym_decrypt(cs.smtp_password, current_setting('app.comm_secret_key'))
-			            FROM comm_secret cs WHERE cs.channel_card_id = ch.id AND cs.smtp_password IS NOT NULL), '')
+			            FROM comm_secret cs WHERE cs.channel_card_id = ch.id AND cs.smtp_password IS NOT NULL), ''),
+			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='send_method'), ''),
+			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='send_domain'), ''),
+			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='send_region'), ''),
+			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='send_stream'), ''),
+			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='send_url'), ''),
+			COALESCE((SELECT pgp_sym_decrypt(cs.send_secret, current_setting('app.comm_secret_key'))
+			            FROM comm_secret cs WHERE cs.channel_card_id = ch.id AND cs.send_secret IS NOT NULL), '')
 		FROM card ch
 		JOIN card_type ct ON ct.id = ch.card_type_id AND ct.name = 'comm_channel'
 		WHERE ch.id = :channel_id AND ch.deleted_at IS NULL
@@ -89,12 +131,14 @@ func LoadSMTPConfig(ctx context.Context, q PoolQuerier, channelID int64) (SMTPCo
 	if err := q.QueryRow(ctx, sql, args...).Scan(
 		&c.ChannelID, &c.ProjectID, &c.ChannelName, &c.Status,
 		&c.Host, &c.Port, &c.Username, &c.From, &c.Password,
+		&c.Method, &c.Domain, &c.Region, &c.Stream, &c.URL, &c.Secret,
 	); err != nil {
 		return SMTPConfig{}, fmt.Errorf("comm.LoadSMTPConfig %d: %w", channelID, err)
 	}
 	if !ValidChannelStatus(c.Status) {
 		c.Status = ChannelStatusEnabled
 	}
+	c.Method = ResolveSendMethod(c.Method)
 	return c, nil
 }
 

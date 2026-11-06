@@ -174,6 +174,18 @@ BEGIN
                 NULL::jsonb;
             CONTINUE;
         END IF;
+        -- 2c. A receive-only account (Send with: doesn't send) takes no
+        --     reply: it would only be failed (docs/MAIL_INTAKE_AND_CALENDARS.md,
+        --     Sending). One set up otherwise but missing a setting fails at
+        --     send time, saying why.
+        IF EXISTS (
+            SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'send_method'
+            WHERE av.card_id = _channel_ref AND av.value = to_jsonb('none'::text)) THEN
+            RETURN QUERY SELECT _idx, false, 'cannot_send'::text,
+                'reply.post: this conversation''s mail account doesn''t send (Comm Channels → Sending)'::text,
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
 
         -- 3. Recipient emails from comm_recipients -> person.email.
         --    Preserve recipient-list order (matches the Go loop) by

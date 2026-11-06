@@ -87,11 +87,10 @@ func (p *Pumper) deliverEmail(ctx context.Context, cfg unitConfig, d Digest) err
 			slog.String("subject", d.Subject()),
 			slog.String("body", d.Text()))
 	} else {
-		if smtpCfg.Host == "" {
-			return fmt.Errorf("comm channel %d has no smtp_host", cfg.channelID)
+		if !smtpCfg.Outbound().Ready() {
+			return fmt.Errorf("comm channel %d has no way out (Sending isn't set up)", cfg.channelID)
 		}
-		sendErr = p.mailer(ctx, smtpCfg.Host, smtpCfg.Port, smtpCfg.Username, smtpCfg.Password,
-			smtpCfg.From, cfg.subscriberEmail, msg)
+		sendErr = comm.Deliver(ctx, smtpCfg.Outbound(), p.mailer, p.apiMailer, smtpCfg.From, cfg.subscriberEmail, msg)
 	}
 
 	kind := "notify_ok"

@@ -815,6 +815,129 @@ replies carry.
   the comm reply composer and editable fields now use too; each box's
   placeholder names it.
 
+## Fourth round: a mail account's ways in and out (Sending)
+
+Asked for on 2026-11-06: make a mail account's setup one whole — how mail
+comes in and how it goes out — and let it send through the same providers
+POST intake reads, where they offer a sending API of similar weight.
+
+### Decisions
+
+| # | Decision |
+| - | -------- |
+| S1 | A mail account is **its ways in plus one way out**. Ways in: IMAP polling, POST routes, SMTP routes (as before). Ways out (`send_method`): an **SMTP server** (as before; an account from before the setting has none, which reads as `smtp`), **Mailgun**, **Postmark**, **your own endpoint** (`webhook`), or **none** (receive only). |
+| S2 | The senders match POST intake's providers: Mailgun and Postmark have sending APIs of the same weight as their inbound webhooks; the raw route's counterpart is the webhook — the raw message POSTed, signed, to an endpoint that sends it (a Cloudflare Worker, a Lambda with Amazon SES, a script). kitp never sends straight to recipients' mail servers: that takes its own IP reputation, reverse DNS, DKIM signing and retry queues. |
+| S3 | **Threading goes out unchanged.** Every sender builds the whole MIME message as before; SMTP, Mailgun (`messages.mime`) and the webhook carry those bytes as they are. Postmark takes JSON: the message is read back into its fields, and Message-ID, In-Reply-To, References and the other headers go in `Headers`. |
+| S4 | One secret per account (`comm_secret.send_secret`): Mailgun's API key, Postmark's server token, or the webhook's signing secret, write-only like the passwords. Changing the method without a new secret clears it — another provider's key is no use. |
+| S5 | Every way kitp sends uses the account's way out: replies (and relayed copies), digests and notifications, account emails (address codes). An account with no way out fails a queued reply at once (`send_fail`, "no way out"), not after retries. |
+| S6 | The setup page says whether the account is **complete** (a way in and a way out), **receive only**, **send only** or **not set up**, and has **Send a test message**. |
+
+### Sending
+
+```
+reply / digest / code ──▶ the whole MIME message ──▶ the account's way out
+                                                      ├─ smtp:     its SMTP server (as before)
+                                                      ├─ mailgun:  POST /v3/<domain>/messages.mime (the bytes as they are)
+                                                      ├─ postmark: POST /email (JSON; threading headers in Headers)
+                                                      ├─ webhook:  POST <url>, the raw message, signed
+                                                      └─ none:     doesn't send
+```
+
+- Settings (comm_channel attributes, `0044_send_methods`): `send_method`,
+  `send_domain` and `send_region` (`us` / `eu`) for Mailgun, `send_stream`
+  for Postmark (empty = `outbound`), `send_url` for the webhook (`https://`
+  only). `channel_can_send(channel)` says whether an account has a way out
+  (a From address and what its method needs); `project_mail_account` and
+  the account-emails choices read it instead of `smtp_host`.
+- `outbound.go`: `Outbound` (the method and its settings, the secret
+  decrypted), `Ready`, `Deliver` (SMTP through the callers' SMTP transport,
+  an API through `SendAPI`), and the three API senders. Every API call goes
+  through the SSRF guard (the connected address is checked, as for SMTP and
+  IMAP), follows no redirect, and has 60 seconds.
+- Answers: a 2xx is sent. A refusal of the message itself bounces it
+  (`bounced`, `send_bounce`) — Mailgun 400, Postmark 422 with ErrorCode 300
+  or 406, a webhook 4xx other than 408 / 429. Anything else (the account's
+  key or domain, 429, 5xx, a redirect, a network error) is tried again like
+  an SMTP 4xx. The provider's answer is clipped into the Comm log; a secret
+  never is.
+
+### The webhook
+
+kitp POSTs each message to `send_url`:
+
+| | |
+| --- | --- |
+| Body | the whole message (`Content-Type: message/rfc822`) |
+| `X-Kitp-Envelope-From` | the envelope sender (the account's From address) |
+| `X-Kitp-Envelope-To` | the recipients, comma-separated |
+| `X-Kitp-Timestamp` | Unix seconds |
+| `X-Kitp-Signature` | `v1=` + hex HMAC-SHA256 under the signing secret of `timestamp "\n" envelope-from "\n" envelope-to "\n" body` |
+
+The endpoint checks the signature (in constant time) and refuses a
+timestamp more than five minutes off; then sends the message. Answer 2xx
+when it is sent (or queued), another 4xx to refuse this message for good,
+5xx to have kitp try again. A Cloudflare Worker, in outline:
+
+```js
+export default {
+  async fetch(req, env) {
+    const raw = new Uint8Array(await req.arrayBuffer());
+    const ts = req.headers.get('X-Kitp-Timestamp');
+    const from = req.headers.get('X-Kitp-Envelope-From');
+    const to = req.headers.get('X-Kitp-Envelope-To');
+    if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) return new Response('stale', { status: 401 });
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(env.KITP_SECRET),
+      { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const head = new TextEncoder().encode(`${ts}\n${from}\n${to}\n`);
+    const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, new Uint8Array([...head, ...raw])));
+    const want = 'v1=' + [...mac].map((b) => b.toString(16).padStart(2, '0')).join('');
+    if (want !== req.headers.get('X-Kitp-Signature')) return new Response('bad signature', { status: 401 });
+    // Hand `raw` to your provider's raw-message API (Amazon SES SendRawEmail,
+    // Cloudflare Email Service, …) with the envelope above.
+    return new Response('ok', { status: 202 });
+  },
+};
+```
+
+(A production check compares the signatures in constant time.)
+
+### The setup page
+
+Comm Channels → a mail account: **Setup** as a banner (green complete,
+amber receive or send only, grey not set up), the name and status, then two
+cards.
+
+- **Sending:** *Send with*, a prominent picker whose caption says what the
+  chosen method does, and that method's fields only, indented under it with a
+  line on the left. Then the From address, signature, quoting and emailed
+  replies (hidden when it doesn't send).
+- **Receiving:** the two ways in side by side (stacked on a narrow pane):
+  *Poll a mailbox (IMAP)* with its fields indented under the checkbox
+  (switching it off clears them: `imap_enabled: false`), and *Have mail
+  delivered* — the POST and SMTP routes (`CommRoutes`, mounted in the form).
+  Then what new mail becomes, the new task status (indented, for *creates a
+  task*) and attachments.
+- **Technical details**, collapsed at the foot: the requests on the wire — a
+  raw, Mailgun and Postmark POST route, what kitp POSTs to your endpoint and
+  its signature, and what it calls at Mailgun and Postmark.
+
+**Send a test message** (`comm_channel.test_send`, admin) mails you through
+the account's way out and says where it went; the Comm log has `send_test`
+with the answer. The layout is RecordForm data on the field table —
+`heading` sections, `prominent`, `indent`, `column`, `hintByValue`,
+`control`, `details`, `standalone`, a readonly's `toneField` — not code in
+the form.
+
+### Files
+
+| Area | Files |
+| ---- | ----- |
+| Senders | `comm/outbound.go` (`Outbound`, `Deliver`, `SendAPI`, Mailgun / Postmark / webhook, `WebhookSignature`); `smtp.go` (`pendingReply.outbound`, `SetAPITransport`); `mailer.go` (`SMTPConfig` carries the method); `personemail.go`, `activitysink/deliver.go` go through `Deliver`; `test_send.go` |
+| SQL | `channel_can_send.sql`, `comm_channel_test_send_batch.sql`; `comm_channel_set_batch.sql` (method, settings, secret, `imap_enabled`), `comm_channel_list_batch.sql` (them, `can_send`, route counts), `project_mail_account.sql`, `account_mail_get_batch.sql` |
+| Schema | seed + `0044_send_methods`; `comm_secret.send_secret` (preDDL) |
+| Web | `admin/comm-channel-form.ts` (sections, the method's fields, the action), `admin/nested-editor.ts` (draft, `channelSetupText`, validation), `admin/record-form.ts` (`heading` fields, an action's `doneText`) |
+| Tests | `comm/outbound_internal_test.go`, `comm/review9_send_test.go`, `store` 0044; `web/test/admin-secrets.test.mjs` |
+
 ## Build checklist
 
 - [x] 1 Strict dates: `isodate` + SQL helpers; attribute.update; card.insert; import preview; activity.select; comm_log.list; user_token.create; CompileTree; migration 0023; tests

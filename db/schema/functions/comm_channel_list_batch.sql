@@ -159,6 +159,32 @@ BEGIN
                             ), ''),
                             'has_imap_password',    (cs.imap_password IS NOT NULL),
                             'has_smtp_password',    (cs.smtp_password IS NOT NULL),
+                            -- Sending (docs/MAIL_INTAKE_AND_CALENDARS.md).
+                            'send_method',          COALESCE((
+                                SELECT av.value #>> '{}' FROM attribute_value av
+                                JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                                WHERE av.card_id = c.id AND ad.name='send_method'), ''),
+                            'send_domain',          COALESCE((
+                                SELECT av.value #>> '{}' FROM attribute_value av
+                                JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                                WHERE av.card_id = c.id AND ad.name='send_domain'), ''),
+                            'send_region',          COALESCE((
+                                SELECT av.value #>> '{}' FROM attribute_value av
+                                JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                                WHERE av.card_id = c.id AND ad.name='send_region'), ''),
+                            'send_stream',          COALESCE((
+                                SELECT av.value #>> '{}' FROM attribute_value av
+                                JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                                WHERE av.card_id = c.id AND ad.name='send_stream'), ''),
+                            'send_url',             COALESCE((
+                                SELECT av.value #>> '{}' FROM attribute_value av
+                                JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                                WHERE av.card_id = c.id AND ad.name='send_url'), ''),
+                            'has_send_secret',      (cs.send_secret IS NOT NULL),
+                            'can_send',             channel_can_send(c.id),
+                            -- Receiving: its POST and SMTP routes.
+                            'post_routes',          (SELECT count(*) FROM card_access ca WHERE ca.card_id = c.id AND ca.purpose = 'inbound_post'),
+                            'smtp_routes',          (SELECT count(*) FROM card_access ca WHERE ca.card_id = c.id AND ca.purpose = 'inbound_smtp'),
                             'created_at',           to_char(c.created_at AT TIME ZONE 'UTC',
                                                              'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
                         ) AS channel_obj

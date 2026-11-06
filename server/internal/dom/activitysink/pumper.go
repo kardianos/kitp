@@ -91,6 +91,7 @@ type Pumper struct {
 	logger     *slog.Logger
 	poster     MSGraphPoster
 	mailer     comm.SMTPTransport
+	apiMailer  comm.APITransport
 	now        func() time.Time
 }
 
@@ -123,6 +124,7 @@ func newPumper(pool *store.Pool, k unitKey, tick time.Duration) *Pumper {
 		logger:     slog.Default(),
 		poster:     realMSGraphPost,
 		mailer:     comm.SendSMTP,
+		apiMailer:  comm.SendAPI,
 		now:        time.Now,
 	}
 }
@@ -146,6 +148,14 @@ func (p *Pumper) SetPoster(fn MSGraphPoster) {
 func (p *Pumper) SetMailer(fn comm.SMTPTransport) {
 	if fn != nil {
 		p.mailer = fn
+	}
+}
+
+// SetAPIMailer swaps the HTTP API transport for an account that sends by
+// Mailgun, Postmark or a webhook (tests).
+func (p *Pumper) SetAPIMailer(fn comm.APITransport) {
+	if fn != nil {
+		p.apiMailer = fn
 	}
 }
 

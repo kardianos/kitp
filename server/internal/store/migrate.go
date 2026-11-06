@@ -1551,6 +1551,30 @@ WHERE EXISTS (SELECT 1 FROM card c WHERE c.id = pe.person_card_id AND c.deleted_
         WHERE uap.person_card_id = pe.person_card_id
           AND ua.deleted_at IS NULL AND ua.login_revoked_at IS NULL);`,
 	},
+	{
+		// How a mail account sends (docs/MAIL_INTAKE_AND_CALENDARS.md,
+		// "Sending"): send_method (smtp | mailgun | postmark | webhook |
+		// none; unset = smtp) and its settings — the Mailgun domain and
+		// region, the Postmark stream, the webhook URL — as comm_channel
+		// attributes (the secret is comm_secret.send_secret, preDDL). The
+		// seed carries them to fresh installs; this adds them to existing
+		// ones. Idempotent — ON CONFLICT DO NOTHING.
+		id: "0044_send_methods",
+		sql: `
+INSERT INTO attribute_def (name, value_type, target_card_type_id, is_built_in, enum_managed)
+VALUES ('send_method', 'text', NULL, true, false),
+       ('send_domain', 'text', NULL, true, false),
+       ('send_region', 'text', NULL, true, false),
+       ('send_stream', 'text', NULL, true, false),
+       ('send_url', 'text', NULL, true, false)
+ON CONFLICT (name) DO NOTHING;
+INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+SELECT ct.id, ad.id, false, v.ord
+FROM (VALUES ('send_method', 17), ('send_domain', 18), ('send_region', 19), ('send_stream', 20), ('send_url', 21)) AS v(attr, ord)
+JOIN card_type ct ON ct.name = 'comm_channel'
+JOIN attribute_def ad ON ad.name = v.attr
+ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that
@@ -1570,6 +1594,8 @@ WHERE EXISTS (SELECT 1 FROM card c WHERE c.id = pe.person_card_id AND c.deleted_
 // session.oidc_sid is the IdP session a kitp session came from (front- and
 // back-channel logout); its index needs it before the DDL runs.
 // comm_imap_file_failure.path is the filing path a message failed on.
+// comm_secret.send_secret is a send method's secret; channel_can_send (a
+// SQL function, checked when it is created) reads it.
 const preDDL = `ALTER TABLE IF EXISTS attribute_value ADD COLUMN IF NOT EXISTS value_type_id int;
 ALTER TABLE IF EXISTS comm_log ADD COLUMN IF NOT EXISTS route_id bigint;
 ALTER TABLE IF EXISTS role ADD COLUMN IF NOT EXISTS rank int NOT NULL DEFAULT 0;
@@ -1579,7 +1605,8 @@ ALTER TABLE IF EXISTS user_account ADD COLUMN IF NOT EXISTS login_revoked_at tim
 ALTER TABLE IF EXISTS user_account ADD COLUMN IF NOT EXISTS revoked_person_card_id bigint;
 ALTER TABLE IF EXISTS activity ADD COLUMN IF NOT EXISTS actor_admin boolean;
 ALTER TABLE IF EXISTS session ADD COLUMN IF NOT EXISTS oidc_sid text;
-ALTER TABLE IF EXISTS comm_imap_file_failure ADD COLUMN IF NOT EXISTS path text NOT NULL DEFAULT '';`
+ALTER TABLE IF EXISTS comm_imap_file_failure ADD COLUMN IF NOT EXISTS path text NOT NULL DEFAULT '';
+ALTER TABLE IF EXISTS comm_secret ADD COLUMN IF NOT EXISTS send_secret bytea;`
 
 // ledgerDDL creates the schema-version ledger. Kept here (not in the generated
 // schema) because it must exist before the generated DDL/seed is gated on it.

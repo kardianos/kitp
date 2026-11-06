@@ -1,6 +1,6 @@
 # Comm channels
 
-A **comm channel** (mail account) configures one email account for a project: how mail comes in — IMAP polling and/or **routes** (below) — and how replies go out (SMTP).
+A **comm channel** (mail account) configures one email account for a project: how mail comes in — IMAP polling and/or **routes** (below) — and how it goes out: an SMTP server, Mailgun, Postmark, or your own endpoint (**Sending**, below). The page says at the top whether the account is **complete** (mail comes in at least one way, and it has a way out), **receive only**, **send only** or **not set up**.
 
 Channels are project-scoped: pick the project in the title-bar picker before authoring or editing.
 
@@ -9,11 +9,11 @@ Channels are project-scoped: pick the project in the title-bar picker before aut
 | Group              | Fields                                                                  |
 | ------------------ | ----------------------------------------------------------------------- |
 | Identity           | `name`, `channel_type` (`email`).                                       |
-| Inbound (IMAP)     | host, port, username, password, mailbox, TLS settings.                  |
-| Outbound (SMTP)    | host, port, username, password, TLS settings.                           |
+| Sending            | **Send with** (SMTP / Mailgun / Postmark / your own endpoint / doesn't send) and that method's fields; the From address. |
+| Receiving (IMAP)   | **Poll a mailbox**: host, port, username, password. Switching it off clears them. |
 | Operational        | `channel_status`, `channel_fault_reason` (set by the runtime on failure). |
 
-Password fields are **write-only**. The list endpoint returns `has_imap_password` / `has_smtp_password` booleans so the form can show "configured" without ever revealing the encrypted bytes. Leaving a password input blank on edit keeps the stored value; submit an explicit empty string only when you want to clear it.
+Password fields — and the API key, server token or signing secret of a send method — are **write-only**. The list endpoint returns `has_imap_password` / `has_smtp_password` / `has_send_secret` booleans so the form can show "configured" without ever revealing the encrypted bytes. Leaving a password input blank on edit keeps the stored value; submit an explicit empty string only when you want to clear it.
 
 ## Status
 
@@ -33,6 +33,24 @@ Password fields are **write-only**. The list endpoint returns `has_imap_password
 | **Reply signature** | What is appended to replies: nothing, the account's name, or the sender's name. |
 | **Emailed replies** | *Are sent on to the rest of the thread* (a new account's default) or *are only filed in kitp* (the default for an account saved before this setting). See **Sending replies on**, below. |
 | **Attachments from email** | *Kept on the thread* (the default) or *not kept*. A message whose files aren't kept is filed without them and says how many were left off; the Comm log's `attachments_dropped` row names them. |
+
+## Sending
+
+One way out per account. Replies, copies sent on, notifications and digests, and account emails (address codes) all go this way.
+
+| Send with | Fields | Notes |
+| --------- | ------ | ----- |
+| **An SMTP server** | host, port (587 STARTTLS / 465 TLS), username, password | As before; an account saved before this setting sends this way. |
+| **Mailgun** | the sending domain (`mg.example.com`), the region (US / EU), a sending API key | kitp hands Mailgun the whole message (`messages.mime`), so threading headers go out as kitp built them. The From address must be on the domain. |
+| **Postmark** | a server API token, the message stream (blank = `outbound`) | The From address must be a confirmed sender signature or on a verified domain. kitp passes its Message-ID, In-Reply-To and References as Postmark headers. |
+| **Your own endpoint** | an `https://` URL, a signing secret | kitp POSTs each message whole (`message/rfc822`) with `X-Kitp-Envelope-From`, `X-Kitp-Envelope-To`, `X-Kitp-Timestamp` and `X-Kitp-Signature` = `v1=` + hex HMAC-SHA256 under the secret of `timestamp⏎from⏎to⏎body`. Your endpoint — a Cloudflare Worker, a Lambda with Amazon SES, a script — checks the signature and the time (within 5 minutes) and sends it. Answer 2xx when sent, another 4xx to refuse the message, 5xx to have kitp try again. |
+| **Doesn't send** | — | Receive only: replies can't go out, and a queued one fails saying why. |
+
+Changing **Send with** needs that provider's key or secret; the old one is cleared.
+
+**Send a test message** mails you, through the account's way out, and says where it went. If it doesn't arrive, the Comm log's `send_test` row has the provider's answer. The message is marked as kitp's own, so a reply to it isn't filed.
+
+A message the provider refuses for good (an invalid or inactive address) is *bounced*; anything else — a wrong key, the provider busy or down — is tried again, then *failed*. Each try is in the Comm log.
 
 ## Inbound mail flow
 

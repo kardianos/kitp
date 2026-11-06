@@ -1,8 +1,8 @@
 -- project_mail_account — the mail account a thread moved into a project
 -- sends from (task.move, review 2026-11-03 round 2 #13 / round 3 #10): the
 -- project's live comm_channel best able to carry the conversation — one
--- that is enabled (channel_status absent or 'enabled'), then one with SMTP
--- set up, then one that reads mail in (an IMAP host and an intake mode other
+-- that is enabled (channel_status absent or 'enabled'), then one that can
+-- send (channel_can_send: SMTP or an HTTP API set up), then one that reads mail in (an IMAP host and an intake mode other
 -- than 'ignore'), lowest id last. NULL when the project has no account.
 CREATE OR REPLACE FUNCTION project_mail_account(project_id bigint) RETURNS bigint
 LANGUAGE sql STABLE AS $$
@@ -23,7 +23,7 @@ LANGUAGE sql STABLE AS $$
   WHERE ch.parent_card_id = project_mail_account.project_id
     AND ch.deleted_at IS NULL
   ORDER BY (a.status = 'enabled') DESC,
-           (a.smtp_host <> '') DESC,
+           channel_can_send(ch.id) DESC,
            (a.imap_host <> '' AND a.intake_mode <> 'ignore') DESC,
            ch.id
   LIMIT 1

@@ -229,8 +229,12 @@ func normalCode(c string) string {
 // go out: the request's transaction rolls back with the failure.
 var pool *store.Pool
 
-// transport sends one message (tests replace it).
-var transport = comm.SendSMTP
+// transport sends one message by SMTP, apiTransport by an HTTP API (the
+// account's send method; tests replace both).
+var (
+	transport    = comm.SendSMTP
+	apiTransport = comm.SendAPI
+)
 
 // sendCodes mails each new code from the account-mail account. It runs in
 // the request's transaction after the SQL: a failed send fails the batch,
@@ -254,8 +258,8 @@ func sendCodes(ctx context.Context, tx store.Querier, ins []any, outs []any) err
 		if cfg.Status != comm.ChannelStatusEnabled {
 			return &reg.HandlerError{Code: "no_sender", Message: "the mail account for account emails is switched off; ask an admin", InputIndex: i}
 		}
-		if cfg.Host == "" || cfg.From == "" {
-			return &reg.HandlerError{Code: "no_sender", Message: "the mail account for account emails has no outgoing server or From address; ask an admin", InputIndex: i}
+		if !cfg.Outbound().Ready() || cfg.From == "" {
+			return &reg.HandlerError{Code: "no_sender", Message: "the mail account for account emails has no way out or From address; ask an admin", InputIndex: i}
 		}
 		msg := buildCodeMail(cfg.From, out.Email, in.code, publicURL())
 		detail := map[string]any{"recipient": out.Email, "purpose": "verify_address"}
@@ -265,7 +269,7 @@ func sendCodes(ctx context.Context, tx store.Querier, ins []any, outs []any) err
 				slog.Int64("channel_id", cfg.ChannelID), slog.Int("bytes", len(msg)))
 		} else {
 			sendCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-			err := transport(sendCtx, cfg.Host, cfg.Port, cfg.Username, cfg.Password, envelope(cfg.From), out.Email, msg)
+			err := comm.Deliver(sendCtx, cfg.Outbound(), transport, apiTransport, envelope(cfg.From), out.Email, msg)
 			cancel()
 			if err != nil {
 				detail["error"] = err.Error()

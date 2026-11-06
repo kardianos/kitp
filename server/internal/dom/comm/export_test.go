@@ -30,3 +30,16 @@ func SetFileFailureSetAsideAfterForTest(d time.Duration) func() {
 
 // SetPollBudgetForTest shortens how long one poll of p may run.
 func (p *IMAPPoller) SetPollBudgetForTest(d time.Duration) { p.budget = d }
+
+// SetTestSendTransportsForTest swaps comm_channel.test_send's transports
+// (nil keeps one); the returned func puts them back.
+func SetTestSendTransportsForTest(smtp SMTPTransport, api APITransport) func() {
+	oldSMTP, oldAPI := testSendSMTP, testSendAPI
+	if smtp != nil {
+		testSendSMTP = smtp
+	}
+	if api != nil {
+		testSendAPI = api
+	}
+	return func() { testSendSMTP, testSendAPI = oldSMTP, oldAPI }
+}

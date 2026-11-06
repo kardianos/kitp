@@ -113,6 +113,11 @@ intake_mode,           text,        true, null, false
 reply_quote,           text,        true, null, false
 relay_replies,         text,        true, null, false
 email_attachments,     text,        true, null, false
+send_method,           text,        true, null, false
+send_domain,           text,        true, null, false
+send_region,           text,        true, null, false
+send_stream,           text,        true, null, false
+send_url,              text,        true, null, false
 channel_ref,           card_ref,    true, $card_type.comm_channel, false
 thread_id,             text,        true, null, false
 replies,               card_ref[],  true, $card_type.reply_body, false
@@ -254,6 +259,11 @@ $card_type.comm_channel, $attribute_def.intake_mode,      false, 13
 $card_type.comm_channel, $attribute_def.reply_quote,      false, 14
 $card_type.comm_channel, $attribute_def.relay_replies,    false, 15
 $card_type.comm_channel, $attribute_def.email_attachments, false, 16
+$card_type.comm_channel, $attribute_def.send_method,      false, 17
+$card_type.comm_channel, $attribute_def.send_domain,      false, 18
+$card_type.comm_channel, $attribute_def.send_region,      false, 19
+$card_type.comm_channel, $attribute_def.send_stream,      false, 20
+$card_type.comm_channel, $attribute_def.send_url,         false, 21
 $card_type.comm,         $attribute_def.title,             true,  0
 $card_type.comm,         $attribute_def.channel_ref,       true,  1
 $card_type.comm,         $attribute_def.thread_id,         true,  2

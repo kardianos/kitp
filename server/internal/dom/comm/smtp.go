@@ -86,6 +86,9 @@ type SMTPSender struct {
 	// to sendSMTP. Nil = use the default (sendSMTP, or a no-op in
 	// dry-run mode).
 	transport SMTPTransport
+	// api ships a message through the account's HTTP API when it sends by
+	// one (Mailgun, Postmark, webhook; outbound.go). Tests swap it.
+	api APITransport
 }
 
 // SMTPTransport is the seam between the queue scanner and the wire.
@@ -173,6 +176,7 @@ func newSMTPSender(pool *store.Pool, channelID int64, tick time.Duration) *SMTPS
 		logger:    slog.Default(),
 	}
 	s.transport = sendSMTP
+	s.api = SendAPI
 	return s
 }
 
@@ -196,6 +200,13 @@ func (s *SMTPSender) SetPublicURL(u string) {
 func (s *SMTPSender) SetTransport(t SMTPTransport) {
 	if t != nil {
 		s.transport = t
+	}
+}
+
+// SetAPITransport swaps the HTTP API transport (tests).
+func (s *SMTPSender) SetAPITransport(t APITransport) {
+	if t != nil {
+		s.api = t
 	}
 }
 
@@ -247,6 +258,14 @@ type pendingReply struct {
 	smtpUser    string
 	smtpPass    string
 	fromAddress string
+	// The account's way out (outbound.go): its send method and an HTTP
+	// API's settings and secret.
+	sendMethod string
+	sendDomain string
+	sendRegion string
+	sendStream string
+	sendURL    string
+	sendSecret string
 	// signature is the resolved text appended to the body as "-<signature>"
 	// (empty = append nothing). It's derived from signatureMode + the two
 	// candidate names below, picked in loadPending after the scan.
@@ -266,6 +285,14 @@ type pendingReply struct {
 	// an emailed reply on to the rest of the thread (relay.go); 0 for a
 	// message written in kitp.
 	relayOf int64
+}
+
+// outbound is r's account's way out.
+func (r pendingReply) outbound() Outbound {
+	return Outbound{
+		Method: ResolveSendMethod(r.sendMethod), Host: r.smtpHost, Port: r.smtpPort, Username: r.smtpUser, Password: r.smtpPass,
+		Domain: r.sendDomain, Region: r.sendRegion, Stream: r.sendStream, URL: r.sendURL, Secret: r.sendSecret,
+	}
 }
 
 // RunOnce executes one scan + send cycle synchronously. Exported so
@@ -533,7 +560,7 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 			slog.Int("message_bytes", len(msg)))
 	} else {
 		sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
-		sendErr = s.transport(sendCtx, r.smtpHost, r.smtpPort, r.smtpUser, r.smtpPass, envelopeFrom, r.to, msg)
+		sendErr = Deliver(sendCtx, r.outbound(), s.transport, s.api, envelopeFrom, r.to, msg)
 		cancel()
 	}
 
@@ -541,6 +568,13 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 	ctx, cancel := resultCtx(ctx)
 	defer cancel()
 	newStatus, logKind, detail := classifySendResult(sendErr, r.to)
+	// No way out isn't a failure that passes: fail it now, saying so.
+	if errors.Is(sendErr, ErrNoWayOut) {
+		if err := s.recordResult(ctx, r, newStatus, logKind, detail); err != nil {
+			return fmt.Errorf("smtp sender: record result for reply %d: %w", r.replyID, err)
+		}
+		return sendErr
+	}
 	var partial *SMTPPartialError
 	if errors.As(sendErr, &partial) {
 		for _, rf := range partial.Refused {
@@ -670,7 +704,17 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 				(SELECT pgp_sym_decrypt(cs.smtp_password, current_setting('app.comm_secret_key'))
 					FROM comm_secret cs WHERE cs.channel_card_id = ch.id AND cs.smtp_password IS NOT NULL),
 				''
-			) AS smtp_password
+			) AS smtp_password,
+			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='send_method'), '') AS send_method,
+			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='send_domain'), '') AS send_domain,
+			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='send_region'), '') AS send_region,
+			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='send_stream'), '') AS send_stream,
+			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='send_url'), '') AS send_url,
+			COALESCE(
+				(SELECT pgp_sym_decrypt(cs.send_secret, current_setting('app.comm_secret_key'))
+					FROM comm_secret cs WHERE cs.channel_card_id = ch.id AND cs.send_secret IS NOT NULL),
+				''
+			) AS send_secret
 		FROM card rb
 		JOIN card_type ct_rb ON ct_rb.id = rb.card_type_id AND ct_rb.name = 'reply_body'
 		JOIN attribute_value status_av ON status_av.card_id = rb.id
@@ -721,6 +765,7 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 			&r.channelName, &r.signatureMode, &r.replyQuote, &r.authorName,
 			&r.relayOf,
 			&r.smtpPass,
+			&r.sendMethod, &r.sendDomain, &r.sendRegion, &r.sendStream, &r.sendURL, &r.sendSecret,
 		); err != nil {
 			return nil, err
 		}

@@ -69,7 +69,7 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// +list_card_type / my_default (personal screens and views),
 		// +reply_cc (message), +comm_confirmed (thread), +reply_message_id
 		// and +reply_refused (message).
-		{`SELECT count(*) FROM attribute_def`, 105},
+		{`SELECT count(*) FROM attribute_def`, 110},
 		// +3 on activity_sink (channel_ref / rollup_minutes / predicate)
 		// +7 on activity_subscription, +4 on link, +7 on approval,
 		// +bundle_key on project, +publishes_to on status, +5 on page,
@@ -80,7 +80,7 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// attachments_left_off), +4 on watch_list, +2 on screen
 		// (list_card_type, predicate) and +1 on filter (my_default), +1 on
 		// reply_body (reply_cc) and +1 on comm (comm_confirmed).
-		{`SELECT count(*) FROM edge`, 158},
+		{`SELECT count(*) FROM edge`, 163},
 		// +activity_subscription.set / .delete.
 		{`SELECT count(*) FROM process`, 8},
 		{`SELECT count(*) FROM process_step`, 9},
@@ -1037,8 +1037,8 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		{seedOnly(`SELECT count(*) FROM card c WHERE %s`, "c.id"), 30},
 		{`SELECT count(*) FROM role`, 5},
 		{`SELECT count(*) FROM card_type`, 23},
-		{`SELECT count(*) FROM attribute_def`, 105},
-		{`SELECT count(*) FROM edge`, 158},
+		{`SELECT count(*) FROM attribute_def`, 110},
+		{`SELECT count(*) FROM edge`, 163},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		// test_demo adds none of its own.
@@ -1874,5 +1874,50 @@ func TestForwardMigration0042ReplyRefused(t *testing.T) {
 	}
 	if got := read(); fmt.Sprint(got) != fmt.Sprint(fresh) {
 		t.Errorf("after 0040: %v, want the fresh seed's %v", got, fresh)
+	}
+}
+
+// TestForwardMigration0044SendMethods: an install from before the send
+// methods gets their five comm_channel attributes and edges (as a fresh one
+// has from the seed), and comm_secret.send_secret (preDDL).
+func TestForwardMigration0044SendMethods(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0044")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+	counts := []string{`SELECT count(*) FROM attribute_def`, `SELECT count(*) FROM edge`}
+	read := func() []int64 {
+		out := make([]int64, len(counts))
+		for i, q := range counts {
+			if err := pool.QueryRow(ctx, q).Scan(&out[i]); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+		return out
+	}
+	fresh := read()
+	names := `('send_method', 'send_domain', 'send_region', 'send_stream', 'send_url')`
+	for _, stmt := range []string{
+		`DELETE FROM edge WHERE attribute_def_id IN (SELECT id FROM attribute_def WHERE name IN ` + names + `)`,
+		`DELETE FROM attribute_def WHERE name IN ` + names,
+		`DELETE FROM schema_version WHERE name = '0044_send_methods'`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("simulate an older install (%s): %v", stmt, err)
+		}
+	}
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	if got := read(); fmt.Sprint(got) != fmt.Sprint(fresh) {
+		t.Errorf("after 0044: %v, want the fresh seed's %v", got, fresh)
+	}
+	var col int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_name = 'comm_secret' AND column_name = 'send_secret'`).Scan(&col); err != nil {
+		t.Fatal(err)
+	}
+	if col != 1 {
+		t.Error("comm_secret.send_secret is missing")
 	}
 }

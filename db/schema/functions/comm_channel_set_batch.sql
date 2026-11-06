@@ -56,6 +56,16 @@ DECLARE
     _imap_port int;
     _imap_username text;
     _smtp_host text;
+    -- Sending (docs/MAIL_INTAKE_AND_CALENDARS.md, "Sending").
+    _send_method text;
+    _send_domain text;
+    _send_region text;
+    _send_stream text;
+    _send_url    text;
+    _send_set    boolean;
+    _send_secret text;
+    _old_method  text;
+    _imap_off    boolean;
     _smtp_port int;
     _smtp_username text;
     _intake_status_id bigint;
@@ -115,6 +125,16 @@ BEGIN
         _reply_quote    := COALESCE(_raw->>'reply_quote', '');
         _relay_replies  := COALESCE(_raw->>'relay_replies', '');
         _email_attachments := COALESCE(_raw->>'email_attachments', '');
+        _send_method := COALESCE(_raw->>'send_method', '');
+        _send_domain := lower(btrim(COALESCE(_raw->>'send_domain', '')));
+        _send_region := COALESCE(_raw->>'send_region', '');
+        _send_stream := btrim(COALESCE(_raw->>'send_stream', ''));
+        _send_url    := btrim(COALESCE(_raw->>'send_url', ''));
+        -- imap_enabled false stops polling: the IMAP settings are cleared.
+        _imap_off := jsonb_typeof(_raw->'imap_enabled') = 'boolean' AND NOT (_raw->>'imap_enabled')::boolean;
+        -- send_secret: like the passwords, absent or null leaves it.
+        _send_set := _raw ? 'send_secret' AND jsonb_typeof(_raw->'send_secret') = 'string';
+        _send_secret := CASE WHEN _send_set THEN _raw->>'send_secret' END;
         BEGIN
             _intake_status_id := COALESCE(NULLIF(_raw->>'intake_status_id', '')::bigint, 0);
         EXCEPTION WHEN invalid_text_representation THEN
@@ -222,6 +242,40 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- How it sends, and what that needs.
+        IF _send_method <> '' AND _send_method NOT IN ('smtp', 'mailgun', 'postmark', 'webhook', 'none') THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                format('comm_channel.set: send_method %L is not one of ''smtp'' / ''mailgun'' / ''postmark'' / ''webhook'' / ''none''', _send_method),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+        IF _send_region <> '' AND _send_region NOT IN ('us', 'eu') THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'comm_channel.set: send_region is ''us'' or ''eu'' (Mailgun''s API)'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+        IF _send_domain <> '' AND (_send_domain !~ '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$' OR length(_send_domain) > 253) THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'comm_channel.set: send_domain must be a domain name such as mg.example.com'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+        IF _send_stream <> '' AND _send_stream !~ '^[A-Za-z0-9_-]{1,64}$' THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'comm_channel.set: send_stream is a Postmark message stream id such as outbound'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+        -- The webhook goes over https only: it carries every message whole.
+        IF _send_url <> '' AND (_send_url !~* '^https://[^/\s?#@]+(/[^\s]*)?$' OR length(_send_url) > 2048) THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'comm_channel.set: send_url must be an https:// URL'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+        IF _send_set AND (_send_secret = '' OR length(_send_secret) > 1024) THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'comm_channel.set: send_secret must be 1 to 1024 characters'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+
         -- 2. Parent project: exists + card_type='project'.
         SELECT ct.name INTO _parent_kind
         FROM card c JOIN card_type ct ON ct.id = c.card_type_id
@@ -300,6 +354,14 @@ BEGIN
             VALUES (_channel_id, 'card_create', comm_channel_set_batch.actor_id);
         END IF;
 
+        -- A key belongs to its provider: changing the send method without
+        -- a new secret clears the old one (a Mailgun key is no Postmark
+        -- token), so the account can't send until it has its own.
+        SELECT COALESCE(NULLIF(av.value #>> '{}', ''), 'smtp') INTO _old_method
+        FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'send_method'
+        WHERE av.card_id = _channel_id;
+        _old_method := COALESCE(_old_method, 'smtp');
+
         -- 5. Multi-attribute write via the ordinality-join pattern.
         --    Build the field list inline, filtered by per-field
         --    presence rules. title + channel_type are always written;
@@ -324,7 +386,12 @@ BEGIN
                 (14, 'intake_mode',          to_jsonb(_intake_mode),           _intake_mode <> ''),
                 (15, 'reply_quote',          to_jsonb(_reply_quote),           _reply_quote <> ''),
                 (16, 'relay_replies',        to_jsonb(_relay_replies),         _relay_replies <> ''),
-                (17, 'email_attachments',    to_jsonb(_email_attachments),     _email_attachments <> '')
+                (17, 'email_attachments',    to_jsonb(_email_attachments),     _email_attachments <> ''),
+                (18, 'send_method',          to_jsonb(_send_method),           _send_method <> ''),
+                (19, 'send_domain',          to_jsonb(_send_domain),           _send_domain <> ''),
+                (20, 'send_region',          to_jsonb(_send_region),           _send_region <> ''),
+                (21, 'send_stream',          to_jsonb(_send_stream),           _send_stream <> ''),
+                (22, 'send_url',             to_jsonb(_send_url),              _send_url <> '')
             ) AS v(ord, attr_name, value, include)
             WHERE v.include
         ),
@@ -351,7 +418,7 @@ BEGIN
         -- 6. comm_secret upsert. Encrypts only the password fields the
         --    caller supplied; omitted (null / missing) values preserve
         --    the stored ciphertext via COALESCE on update.
-        INSERT INTO comm_secret (channel_card_id, imap_password, smtp_password)
+        INSERT INTO comm_secret (channel_card_id, imap_password, smtp_password, send_secret)
         VALUES (
             _channel_id,
             CASE WHEN _imap_set
@@ -359,6 +426,9 @@ BEGIN
                  ELSE NULL END,
             CASE WHEN _smtp_set
                  THEN pgp_sym_encrypt(_smtp_pwd, current_setting('app.comm_secret_key'))
+                 ELSE NULL END,
+            CASE WHEN _send_set
+                 THEN pgp_sym_encrypt(_send_secret, current_setting('app.comm_secret_key'))
                  ELSE NULL END
         )
         ON CONFLICT (channel_card_id) DO UPDATE SET
@@ -372,7 +442,24 @@ BEGIN
                      THEN pgp_sym_encrypt(_smtp_pwd, current_setting('app.comm_secret_key'))
                      ELSE NULL END,
                 comm_secret.smtp_password),
+            send_secret = CASE
+                WHEN _send_set THEN pgp_sym_encrypt(_send_secret, current_setting('app.comm_secret_key'))
+                WHEN _send_method <> '' AND _send_method <> _old_method THEN NULL
+                ELSE comm_secret.send_secret END,
             updated_at = now();
+
+        -- 6b. Polling stopped: the IMAP settings go, so the poller leaves
+        --     the account alone (POST and SMTP routes still deliver).
+        IF _imap_off THEN
+            INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
+            SELECT _channel_id, 'attr_update', av.attribute_def_id, av.value, NULL, comm_channel_set_batch.actor_id
+            FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
+            WHERE av.card_id = _channel_id AND ad.name IN ('imap_host', 'imap_port', 'imap_username');
+            DELETE FROM attribute_value av USING attribute_def ad
+            WHERE ad.id = av.attribute_def_id AND av.card_id = _channel_id
+              AND ad.name IN ('imap_host', 'imap_port', 'imap_username');
+            UPDATE comm_secret SET imap_password = NULL, updated_at = now() WHERE channel_card_id = _channel_id;
+        END IF;
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object(

@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -93,6 +94,22 @@ type ChannelSetInput struct {
 	// the thread: 'keep' | 'drop'. Empty leaves the stored value unchanged;
 	// unset = 'keep'.
 	EmailAttachments string `json:"email_attachments,omitempty" mcp:"desc=files on incoming mail; one of 'keep' | 'drop'; empty leaves the stored value unchanged (unset = 'keep')"`
+	// IMAPEnabled false stops polling: the IMAP host, port, username and
+	// password are cleared (POST and SMTP routes still deliver).
+	IMAPEnabled *bool `json:"imap_enabled,omitempty" mcp:"desc=false stops polling a mailbox: clears the IMAP settings; omit to leave them"`
+	// SendMethod is how the account sends (docs/MAIL_INTAKE_AND_CALENDARS.md,
+	// "Sending"): an SMTP server, Mailgun's or Postmark's API, the
+	// account's own endpoint (a signed POST of the raw message), or not at
+	// all. Empty leaves it; unset = smtp. Changing it without a new
+	// SendSecret clears the stored one.
+	SendMethod string `json:"send_method,omitempty" mcp:"desc=how it sends: 'smtp' | 'mailgun' | 'postmark' | 'webhook' | 'none'; empty leaves the stored value (unset = smtp); changing it without send_secret clears the stored secret"`
+	SendDomain string `json:"send_domain,omitempty" mcp:"desc=Mailgun: the sending domain (mg.example.com)"`
+	SendRegion string `json:"send_region,omitempty" mcp:"desc=Mailgun: the API region, 'us' or 'eu'"`
+	SendStream string `json:"send_stream,omitempty" mcp:"desc=Postmark: the message stream (empty = outbound)"`
+	SendURL    string `json:"send_url,omitempty" mcp:"desc=webhook: the https:// endpoint kitp POSTs each message to"`
+	// SendSecret is Mailgun's API key, Postmark's server token or the
+	// webhook's signing secret: write-only, omitted leaves the stored one.
+	SendSecret *string `json:"send_secret,omitempty" mcp:"desc=Mailgun API key / Postmark server token / webhook signing secret; omit to leave unchanged; encrypted at rest"`
 }
 
 // ChannelSetOutput surfaces the channel card id so the caller can chain.
@@ -131,6 +148,15 @@ type ChannelRow struct {
 	FaultReason      string `json:"channel_fault_reason,omitempty" mcp:"desc=free-form reason set by the runtime when status='disabled-fault'; empty otherwise"`
 	HasIMAPPassword  bool   `json:"has_imap_password" mcp:"desc=true if a non-null encrypted IMAP password is stored"`
 	HasSMTPPassword  bool   `json:"has_smtp_password" mcp:"desc=true if a non-null encrypted SMTP password is stored"`
+	SendMethod       string `json:"send_method" mcp:"desc=how it sends: 'smtp' | 'mailgun' | 'postmark' | 'webhook' | 'none' (empty = unset, treated as 'smtp')"`
+	SendDomain       string `json:"send_domain" mcp:"desc=Mailgun: the sending domain"`
+	SendRegion       string `json:"send_region" mcp:"desc=Mailgun: the API region ('us' | 'eu'; empty = us)"`
+	SendStream       string `json:"send_stream" mcp:"desc=Postmark: the message stream (empty = outbound)"`
+	SendURL          string `json:"send_url" mcp:"desc=webhook: the endpoint URL"`
+	HasSendSecret    bool   `json:"has_send_secret" mcp:"desc=true if the send method's API key / token / signing secret is stored"`
+	CanSend          bool   `json:"can_send" mcp:"desc=true when it has a way out: a From address and what its send method needs"`
+	PostRoutes       int    `json:"post_routes" mcp:"desc=its POST intake routes"`
+	SMTPRoutes       int    `json:"smtp_routes" mcp:"desc=its SMTP intake routes"`
 	CreatedAt        string `json:"created_at" mcp:"desc=RFC3339 creation timestamp of the channel card"`
 }
 
@@ -349,6 +375,20 @@ func Register(p *store.Pool) {
 		// full validate + INSERT/UPDATE + comm_secret pgcrypto upsert
 		// pipeline. Authz still runs in Go (admin global gate).
 		SQLFunc: "comm_channel_set_batch",
+	})
+	reg.Register(reg.Handler{
+		Endpoint:     "comm_channel",
+		Action:       "test_send",
+		Doc:          "Admin-only: mail yourself a short test message through a mail account's way out (its send method: SMTP, Mailgun, Postmark or its webhook). Answers where it went; a failure is in the account's Comm log (send_test).",
+		InputType:    reflect.TypeFor[ChannelTestSendInput](),
+		OutputType:   reflect.TypeFor[ChannelTestSendOutput](),
+		AllowedRoles: []string{"admin"},
+		Authz:        authzAdmin,
+		SQLFunc:      "comm_channel_test_send_batch",
+		// The SQL checks the account and finds the address; the message
+		// goes out here, in the request (a failure fails the call).
+		PostRun: sendTestMessages,
+		Timeout: 90 * time.Second,
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "comm_channel",
