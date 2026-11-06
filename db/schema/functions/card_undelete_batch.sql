@@ -63,6 +63,14 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- 3a. A mail account or an activity sink is a workspace admin's
+        --     (review 2026-11-06 #2).
+        IF card_is_admin_only(_card_id) AND NOT user_is_global_admin(card_undelete_batch.actor_id) THEN
+            RETURN QUERY SELECT _idx, false, 'forbidden'::text,
+                'card.undelete: only a workspace admin changes a mail account or an activity sink'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+
         -- 3b. A personal card comes back within its owner's cap: deleting,
         --     creating and undeleting put a person past it (review
         --     2026-11-03 round 5 #11).

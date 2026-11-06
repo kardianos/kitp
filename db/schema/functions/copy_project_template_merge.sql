@@ -154,13 +154,17 @@ BEGIN
     -- BFS-walk: every non-task non-deleted descendant under template_id.
     -- A private card (someone's own view on a template's screen,
     -- docs/PERSONAL_SCREENS.md) is theirs: it isn't copied into anyone's
-    -- new project.
+    -- new project. Nor is a card in an area the template has switched off
+    -- (card_in_off_area): off hides it from everyone, and in the new
+    -- project, where the area is on, the copy would show (review
+    -- 2026-11-06 #9).
     INSERT INTO _descendants (src_id, src_card_type_id, src_parent_id, src_phase)
     WITH RECURSIVE walk AS (
         SELECT id, card_type_id, parent_card_id, phase, 1 AS depth
         FROM card
         WHERE parent_card_id = template_id AND deleted_at IS NULL AND private_to IS NULL
           AND card_type_id <> ALL (_content_ct_ids)
+          AND NOT card_in_off_area(id)
         UNION ALL
         SELECT c.id, c.card_type_id, c.parent_card_id, c.phase, w.depth + 1
         FROM card c
@@ -174,6 +178,7 @@ BEGIN
         WHERE c.deleted_at IS NULL AND c.private_to IS NULL AND w.depth < 16
           AND (_task_ct_id = 0 OR w.card_type_id <> _task_ct_id)
           AND c.card_type_id <> ALL (_content_ct_ids)
+          AND NOT card_in_off_area(c.id)
     )
     SELECT w.id, w.card_type_id, w.parent_card_id, w.phase
     FROM walk w

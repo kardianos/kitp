@@ -440,6 +440,21 @@ BEGIN
                     actor_id);
         END LOOP;
 
+        -- 7a. The moved root's own parent_task, when that parent stays in
+        --     another project, goes (with parent_relationship): it named a
+        --     task the destination's people may not see, and the export of
+        --     the destination printed it (review 2026-11-06 L5). Its
+        --     descendants' links are within the moved set.
+        DELETE FROM attribute_value
+        WHERE card_id = _card_id
+          AND attribute_def_id = ANY(ARRAY[_parent_task_def_id, _parent_relationship_def_id])
+          AND EXISTS (
+              SELECT 1 FROM attribute_value pv
+              WHERE pv.card_id = _card_id AND pv.attribute_def_id = _parent_task_def_id
+                AND card_enclosing_project(
+                        CASE WHEN jsonb_typeof(pv.value) = 'number' THEN (pv.value)::text::bigint END)
+                    IS DISTINCT FROM _new_project_id);
+
         -- 7b. The moved tasks' threads send from a mail account of the
         --     project they are in now (project_mail_account: an enabled one
         --     that sends, by preference), or none when it has none

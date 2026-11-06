@@ -388,6 +388,20 @@ BEGIN
                 END IF;
                 CONTINUE;
             END IF;
+            -- Each recipient must be someone the caller may name in this
+            -- project: the thread's To shows their address and the first
+            -- message goes to them (person_referable; review 2026-11-06 #5).
+            SELECT m.want INTO _bad_id
+            FROM unnest(_ids) AS m(want)
+            WHERE NOT person_referable(comm_create_batch.actor_id, m.want, _task_project)
+            ORDER BY m.want
+            LIMIT 1;
+            IF FOUND THEN
+                RETURN QUERY SELECT _idx, false, 'invalid_recipient'::text,
+                    format('comm.create: person %s can''t be used here', _bad_id),
+                    NULL::jsonb;
+                CONTINUE;
+            END IF;
 
             -- Canonical numeric jsonb array, write activity + upsert.
             SELECT jsonb_agg(to_jsonb(v) ORDER BY ord)

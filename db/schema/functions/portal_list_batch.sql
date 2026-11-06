@@ -116,6 +116,9 @@ BEGIN
                     WHERE jsonb_typeof(pv.value) = 'array'
                       AND (pv.value @> jsonb_build_array(p.id::text)
                            OR pv.value @> jsonb_build_array(p.id))
+                      -- Only statuses the caller can see: another project's
+                      -- name isn't theirs to read (review 2026-11-06 L13).
+                      AND card_visible_to(actor_id, s.id)
                 ) st ON true
                 WHERE p.deleted_at IS NULL
                   -- Sites switched off: there are no portals to list.

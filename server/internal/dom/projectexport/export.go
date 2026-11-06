@@ -241,10 +241,10 @@ type taskAttrCol struct {
 // below. Keep the membership in sync with the header literal at the
 // top of handleSimpleCSV / handleSimpleXLSX.
 var builtinExportAttrs = map[string]bool{
-	"title":       true,
-	"description": true,
-	"sort_order":  true,
-	"assignee":    true, // emitted as the assignee_email + assignee_name pair
+	"title":         true,
+	"description":   true,
+	"sort_order":    true,
+	"assignee":      true, // emitted as the assignee_email + assignee_name pair
 	"milestone_ref": true,
 	"component_ref": true,
 	"tags":          true,
@@ -580,20 +580,33 @@ func loadPersonLookup(ctx context.Context, pool *store.Pool, ids []int64) (map[i
 }
 
 // loadTitleLookup returns id -> title for any card kind. Used for the
-// milestone / component columns since both carry the title attribute.
+// milestone / component columns since both carry the title attribute, and
+// for a task's threads. A card that is deleted, under a deleted card, or in
+// an area that is switched off isn't named: the file leaves kitp, and off
+// hides a card from everyone (review 2026-11-06 L4 — a thread's subject
+// with Conversations off).
 func loadTitleLookup(ctx context.Context, pool *store.Pool, ids []int64) (map[int64]string, error) {
 	out := map[int64]string{}
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := pool.P.Query(ctx, `
+	b := named.New()
+	b.Set("ids", ids)
+	q, args, err := b.Compile(`
 		SELECT c.id, av.value #>> '{}'
 		FROM card c
 		LEFT JOIN attribute_value av
 		  JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'title'
 		  ON av.card_id = c.id
-		WHERE c.id = ANY($1::bigint[])
-	`, ids)
+		WHERE c.id = ANY(:ids::bigint[])
+		  AND c.deleted_at IS NULL
+		  AND NOT card_under_deleted(c.id)
+		  AND NOT card_in_off_area(c.id)
+	`)
+	if err != nil {
+		return nil, api.Internal(fmt.Errorf("load titles: compile: %w", err))
+	}
+	rows, err := pool.P.Query(ctx, q, args...)
 	if err != nil {
 		return nil, api.Internal(fmt.Errorf("load titles: %w", err))
 	}

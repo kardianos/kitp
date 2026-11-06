@@ -141,6 +141,21 @@ BEGIN
                 NULL::jsonb;
             CONTINUE;
         END IF;
+        -- A page's text is at most 512 KB (see attribute.update; review
+        -- 2026-11-06 #6).
+        IF _card_type_name = 'page' AND octet_length(COALESCE(_attrs->>'description', '')) > 524288 THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'card.insert: a page''s text can be at most 512 KB'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+        -- Mail accounts and activity sinks are made by comm_channel.set /
+        -- activity_sink.set, workspace admin only (review 2026-11-06 #2).
+        IF _card_type_name IN ('comm_channel', 'activity_sink')
+           AND NOT user_is_global_admin(card_insert_batch.actor_id) THEN
+            RETURN QUERY SELECT _idx, false, 'forbidden'::text,
+                'card.insert: only a workspace admin changes a mail account or an activity sink'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
 
         -- 2. Title required.
         IF _title IS NULL OR _title = '' THEN
@@ -416,27 +431,35 @@ BEGIN
                     SELECT card_type_id INTO _vct FROM card WHERE id = _v;
                     IF NOT FOUND THEN
                         _rej_code := 'cross_project_ref';
-                        _rej_msg := format('attribute %L: value card %s does not exist', _attr_name, _v);
+                        _rej_msg := format('attribute %L: value card %s can''t be used here', _attr_name, _v);
                         EXIT;
                     END IF;
                     IF _attr_target_type <> 0 AND _vct <> _attr_target_type THEN
                         _rej_code := 'cross_project_ref';
-                        _rej_msg := format('attribute %L: value card %s is not of the expected card type',
-                            _attr_name, _v);
+                        _rej_msg := format('attribute %L: value card %s can''t be used here', _attr_name, _v);
                         EXIT;
                     END IF;
                     -- Value's enclosing project via the shared capped
                     -- helper (A1/A10); NULL → global.
                     _vproj := card_enclosing_project(_v);
-                    -- Global value is a wildcard.
+                    -- Global value is a wildcard — but a person must be one
+                    -- the caller may name there (person_referable; review
+                    -- 2026-11-06 #5).
                     IF _vproj IS NULL THEN
+                        IF _vct = (SELECT id FROM card_type WHERE name = 'person')
+                           AND NOT person_referable(card_insert_batch.actor_id, _v, _enclosing_project) THEN
+                            _rej_code := 'cross_project_ref';
+                            _rej_msg := format('attribute %L: value card %s can''t be used here', _attr_name, _v);
+                            EXIT;
+                        END IF;
                         CONTINUE;
                     END IF;
+                    -- One message for a missing card, another type's and
+                    -- another project's: a refusal mustn't say which, or in
+                    -- which project a card is (review 2026-11-06 L7).
                     IF _enclosing_project IS NULL OR _vproj <> _enclosing_project THEN
                         _rej_code := 'cross_project_ref';
-                        _rej_msg := format(
-                            'attribute %L: value card %s belongs to project %s but target is in project %s',
-                            _attr_name, _v, _vproj, COALESCE(_enclosing_project::text, '0'));
+                        _rej_msg := format('attribute %L: value card %s can''t be used here', _attr_name, _v);
                         EXIT;
                     END IF;
                 END LOOP;

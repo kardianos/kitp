@@ -47,6 +47,14 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- 1b. A mail account or an activity sink is a workspace admin's
+        --     (review 2026-11-06 #2).
+        IF card_is_admin_only(_card_id) AND NOT user_is_global_admin(card_delete_batch.actor_id) THEN
+            RETURN QUERY SELECT _idx, false, 'forbidden'::text,
+                'card.delete: only a workspace admin changes a mail account or an activity sink'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+
         -- 2. flow_step reference guard.
         SELECT count(*) INTO _blocker_count
         FROM flow_step fs

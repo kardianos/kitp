@@ -139,6 +139,9 @@ BEGIN
                                 CROSS JOIN LATERAL approval_fields(ap.id) fl
                                 WHERE ap.parent_card_id = c.parent_card_id
                                   AND ap.deleted_at IS NULL
+                                  -- Approvals off hides the request
+                                  -- (review 2026-11-06 L6).
+                                  AND NOT card_in_off_area(ap.id)
                                   AND av.value = to_jsonb(c.id)
                                 ORDER BY ap.id
                                 LIMIT 1

@@ -154,6 +154,15 @@ set `CardTypeID` + `ProcessName` on their `reg.Handler`, OR set
 exists. `reg.Register` panics at startup otherwise. See DI-5 in
 `docs/DESIGN_INVARIANTS.md`.
 
+The authz pass runs before the request transaction: a gated leaf whose
+anchor card doesn't exist yet is refused (`checkAnchorExists`), never
+waved through. Mail accounts and activity sinks are workspace-admin
+only on every generic write (`card_is_admin_only`). A write that names a
+person (a card_ref to `person`, a thread's recipients) checks
+`person_referable(actor, person, project)`: a person card has no project,
+but its name and email come back out through exports, threads and
+digests.
+
 ## Unified handler shape
 
 Every batch handler that touches the DB lives as a PL/pgSQL

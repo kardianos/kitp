@@ -131,6 +131,26 @@ BEGIN
                 'attribute.update: only a workspace admin can choose which portals a status publishes to'::text, NULL::jsonb;
             CONTINUE;
         END IF;
+        -- A page's text is at most 512 KB: the portal builder renders it in
+        -- memory, many times over, and one large page took kitpd down at
+        -- every build (review 2026-11-06 #6).
+        IF _attr_name = 'description' AND octet_length(COALESCE(_value #>> '{}', '')) > 524288
+           AND EXISTS (SELECT 1 FROM card c JOIN card_type ct ON ct.id = c.card_type_id
+                       WHERE c.id = _card_id AND ct.name = 'page') THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'attribute.update: a page''s text can be at most 512 KB'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+        -- A mail account or an activity sink is a workspace admin's
+        -- (comm_channel.set and activity_sink.set say so): its server, port,
+        -- username and From decide where kitp logs in with the stored
+        -- password, so a project-scoped admin's card.update grant must not
+        -- reach them through a generic write (review 2026-11-06 #2).
+        IF card_is_admin_only(_card_id) AND NOT user_is_global_admin(attribute_update_batch.actor_id) THEN
+            RETURN QUERY SELECT _idx, false, 'forbidden'::text,
+                'attribute.update: only a workspace admin changes a mail account or an activity sink'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
         -- kitp sets these itself, never through a generic write:
         --   bundle_key — marks a feature bundle's hidden source project; only
         --     the bundle files set it (store.applyBundles), and boot trusts it.
@@ -321,8 +341,7 @@ BEGIN
                     FROM card WHERE id = _v;
                     IF NOT FOUND THEN
                         _rej_code := 'cross_project_ref';
-                        _rej_msg := format('attribute %L: value card %s does not exist',
-                            _attr_name, _v);
+                        _rej_msg := format('attribute %L: value card %s can''t be used here', _attr_name, _v);
                         EXIT;
                     END IF;
                     -- A private card (docs/PERSONAL_SCREENS.md) may only be
@@ -343,22 +362,30 @@ BEGIN
                     IF _target_card_type_id IS NOT NULL
                        AND _vct <> _target_card_type_id THEN
                         _rej_code := 'cross_project_ref';
-                        _rej_msg := format('attribute %L: value card %s is not of the expected card type',
-                            _attr_name, _v);
+                        _rej_msg := format('attribute %L: value card %s can''t be used here', _attr_name, _v);
                         EXIT;
                     END IF;
                     -- Resolve value's enclosing project (NULL → global)
                     -- via the shared capped helper (A1/A10).
                     _vproj := card_enclosing_project(_v);
-                    -- Global value (no project ancestor) is a wildcard.
+                    -- Global value (no project ancestor) is a wildcard —
+                    -- but a person must be one the caller may name there
+                    -- (person_referable; review 2026-11-06 #5).
                     IF _vproj IS NULL THEN
+                        IF _vct = (SELECT id FROM card_type WHERE name = 'person')
+                           AND NOT person_referable(attribute_update_batch.actor_id, _v, _target_project_id) THEN
+                            _rej_code := 'cross_project_ref';
+                            _rej_msg := format('attribute %L: value card %s can''t be used here', _attr_name, _v);
+                            EXIT;
+                        END IF;
                         CONTINUE;
                     END IF;
                     IF _target_project_id IS NULL OR _vproj <> _target_project_id THEN
                         _rej_code := 'cross_project_ref';
-                        _rej_msg := format(
-                            'attribute %L: value card %s belongs to project %s but target is in project %s',
-                            _attr_name, _v, _vproj, COALESCE(_target_project_id::text, '0'));
+                        -- One message for missing, another type's and another
+                        -- project's: a refusal mustn't say which, or where a
+                        -- card is (review 2026-11-06 L7).
+                        _rej_msg := format('attribute %L: value card %s can''t be used here', _attr_name, _v);
                         EXIT;
                     END IF;
                 END LOOP;

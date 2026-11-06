@@ -109,6 +109,12 @@ BEGIN
             CONTINUE;
         END IF;
 
+        IF card_is_admin_only(_survivor) AND NOT user_is_global_admin(card_merge_batch.actor_id) THEN
+            RETURN QUERY SELECT _idx, false, 'forbidden'::text,
+                'card.merge: only a workspace admin changes a mail account or an activity sink'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+
         _surv_project := card_home_project(_survivor);
 
         -- Every loser must exist, be live, share the survivor's card_type,

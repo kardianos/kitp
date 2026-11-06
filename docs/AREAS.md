@@ -106,6 +106,11 @@ AND NOT it, so card reads, search, activity, comments, comms, MCP tools
 and agents hide the area's data together. A message (reply_body, which
 has no parent card) is hidden with its thread. When no area is off
 anywhere, the check costs nothing per row (it is answered once per query).
+The same holds where cards leave a project another way: the export names
+no card that is off (a thread's subject, say), a thread's approval request
+is left out while Approvals is off, and stamping a template copies none of
+its cards in an area it has off — in the new project, where the area is
+on, the copy would show (review 2026-11-06 #9, L4, L6).
 
 What else "off" does:
 

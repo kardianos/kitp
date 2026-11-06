@@ -447,6 +447,45 @@ func (s *Server) checkBundleSource(ctx context.Context, h reg.Handler, input any
 	return nil
 }
 
+// errNoSuchCard is the deny for a gated leaf whose card doesn't exist.
+var errNoSuchCard = &reg.HandlerError{Code: "card_not_found", Message: "card not found"}
+
+// checkAnchorExists refuses a gated leaf (ProcessName + CardTypeID) whose
+// anchor card — card.insert's parent, else the card the scope pass walks
+// from — names no card. The authz pass reads the pool before the request
+// transaction opens; a check that passed an unknown id (no card type, no
+// project, nobody's private card) let a batch write whatever card got that
+// id in between (review 2026-11-06 #1). lookup holds every anchor that
+// exists (runAuthzPass preloads them).
+func (s *Server) checkAnchorExists(ctx context.Context, h reg.Handler, input any, lookup map[int64]cardInfo) error {
+	if h.ProcessName == "" || h.CardTypeID == nil {
+		return nil // not gated: the handler checks its own cards
+	}
+	var anchor int64
+	if h.Endpoint == "card" && h.Action == "insert" {
+		parent, _, err := cardInsertParent(input)
+		if err != nil {
+			return err
+		}
+		if parent != nil {
+			anchor = *parent
+		}
+	} else {
+		cid, err := s.scopeCardID(ctx, h, input)
+		if err != nil {
+			return err
+		}
+		anchor = cid
+	}
+	if anchor == 0 {
+		return nil
+	}
+	if _, ok := lookup[anchor]; !ok {
+		return errNoSuchCard
+	}
+	return nil
+}
+
 // errPrivate is the deny for someone else's private card: the same shape as
 // a missing grant, so it says nothing about whose card it is.
 var errPrivate = &reg.HandlerError{Code: "unauthorized", Message: "that card is someone else's"}

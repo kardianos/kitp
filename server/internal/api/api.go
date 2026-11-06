@@ -968,6 +968,15 @@ func (s *Server) runAuthzPass(ctx context.Context, prepped []prepared, slots []S
 	}
 
 	for _, p := range prepped {
+		// A gated leaf aimed at a card that doesn't exist yet is refused:
+		// these checks run before the request transaction, and card ids are
+		// sequential, so an id that is free now can be someone else's new
+		// card by the time the handler writes it — in another project, or
+		// private to another person (review 2026-11-06 #1).
+		if err := s.checkAnchorExists(ctx, p.Handler, p.Input, lookup); err != nil {
+			s.abortWithError(ctx, slots, p.OuterIdx, "card_not_found", err)
+			return err
+		}
 		owned, err := s.checkPrivate(ctx, p.Handler, p.Input, lookup, actorPerson)
 		if err != nil {
 			s.abortWithError(ctx, slots, p.OuterIdx, "unauthorized", err)

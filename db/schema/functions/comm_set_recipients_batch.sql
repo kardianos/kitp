@@ -171,6 +171,24 @@ BEGIN
                 END IF;
                 CONTINUE;
             END IF;
+            -- Someone added must be a person the caller may name in this
+            -- project (person_referable; review 2026-11-06 #5). Who is on
+            -- the thread already stays.
+            SELECT m.want INTO _bad_id
+            FROM unnest(_ids) AS m(want)
+            WHERE NOT EXISTS (
+                    SELECT 1 FROM attribute_value av
+                    WHERE av.card_id = _comm_id AND av.attribute_def_id = _comm_recipients_def_id
+                      AND jsonb_typeof(av.value) = 'array' AND av.value @> to_jsonb(m.want))
+              AND NOT person_referable(comm_set_recipients_batch.actor_id, m.want, card_enclosing_project(_comm_id))
+            ORDER BY m.want
+            LIMIT 1;
+            IF FOUND THEN
+                RETURN QUERY SELECT _idx, false, 'invalid_recipient'::text,
+                    format('comm.set_recipients: person %s can''t be used here', _bad_id),
+                    NULL::jsonb;
+                CONTINUE;
+            END IF;
         END IF;
 
         -- 5. Build canonical numeric jsonb array (preserves stored
