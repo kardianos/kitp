@@ -315,7 +315,7 @@ func TestSubscriptionPumpDeliversDigest(t *testing.T) {
 
 	mail := &sentMail{}
 	p := f.pumper(subID, mail)
-	if err := p.RunOnce(context.Background()); err != nil {
+	if err := settled(t, p).RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
 	if len(mail.msgs) != 1 {
@@ -350,7 +350,7 @@ func TestSubscriptionPumpDeliversDigest(t *testing.T) {
 	}
 
 	// Idle tick: nothing new to send.
-	if err := p.RunOnce(context.Background()); err != nil {
+	if err := settled(t, p).RunOnce(context.Background()); err != nil {
 		t.Fatalf("idle RunOnce: %v", err)
 	}
 	if len(mail.msgs) != 1 {
@@ -390,7 +390,7 @@ func TestSubscriptionSkipsOwnAndAgentChanges(t *testing.T) {
 	}
 
 	mail := &sentMail{}
-	if err := f.pumper(subID, mail).RunOnce(ctx); err != nil {
+	if err := settled(t, f.pumper(subID, mail)).RunOnce(ctx); err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
 	if len(mail.msgs) != 1 {
@@ -428,7 +428,7 @@ func TestSubscriptionApprovalsAskedOfMe(t *testing.T) {
 	ask(f.member.personID)
 
 	mail := &sentMail{}
-	if err := f.pumper(subID, mail).RunOnce(context.Background()); err != nil {
+	if err := settled(t, f.pumper(subID, mail)).RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
 	if len(mail.msgs) != 1 {
@@ -453,7 +453,7 @@ func TestSubscriptionRollupHoldsThenDelivers(t *testing.T) {
 	p := f.pumper(subID, mail)
 	start := time.Now()
 	p.SetNow(func() time.Time { return start.Add(time.Minute) })
-	if err := p.RunOnce(context.Background()); err != nil {
+	if err := settled(t, p).RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce (hold): %v", err)
 	}
 	if len(mail.msgs) != 0 {
@@ -470,7 +470,7 @@ func TestSubscriptionRollupHoldsThenDelivers(t *testing.T) {
 
 	f.comment(t, task, "second")
 	p.SetNow(func() time.Time { return start.Add(11 * time.Minute) })
-	if err := p.RunOnce(context.Background()); err != nil {
+	if err := settled(t, p).RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce (due): %v", err)
 	}
 	if len(mail.msgs) != 1 {
@@ -499,7 +499,7 @@ func TestSubscriptionSkipsWhenSubscriberLosesAccess(t *testing.T) {
 
 	mail := &sentMail{}
 	p := f.pumper(subID, mail)
-	if err := p.RunOnce(context.Background()); err != nil {
+	if err := settled(t, p).RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
 	if len(mail.msgs) != 0 {
@@ -517,7 +517,7 @@ func TestSubscriptionBounceFaults(t *testing.T) {
 
 	mail := &sentMail{err: &comm.SMTPBounceError{Code: 550, Msg: "no such user"}}
 	p := f.pumper(subID, mail)
-	if err := p.RunOnce(context.Background()); err == nil {
+	if err := settled(t, p).RunOnce(context.Background()); err == nil {
 		t.Fatal("expected the bounce to surface from RunOnce")
 	}
 	status, reason := readSinkStatus(t, f.sinkFixture, subID)
@@ -535,7 +535,7 @@ func TestSubscriptionBounceFaults(t *testing.T) {
 
 	// Faulted → paused: no retries until re-enabled.
 	before := len(mail.msgs)
-	if err := p.RunOnce(context.Background()); err != nil {
+	if err := settled(t, p).RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce while faulted: %v", err)
 	}
 	if len(mail.msgs) != before {
@@ -560,7 +560,7 @@ func TestTeamsSinkPostsOneDigestPerTick(t *testing.T) {
 	stub := &stubPoster{}
 	p := activitysink.NewMSGraphPumperForTest(f.sp, teamsID, f.projectID, time.Second)
 	p.SetPoster(stub.post)
-	if err := p.RunOnce(context.Background()); err != nil {
+	if err := settled(t, p).RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
 	if len(stub.calls) != 1 {

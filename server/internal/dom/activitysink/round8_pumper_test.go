@@ -36,7 +36,7 @@ func drainedPumper(t *testing.T, f *sinkFixture) (*activitysink.Pumper, *stubPos
 	p := activitysink.NewMSGraphPumperForTest(f.sp, sinkID, f.projectID, time.Second)
 	p.SetPoster(stub.post)
 	p.SetBatchLimit(10_000)
-	if err := p.RunOnce(context.Background()); err != nil { // the fixture's rows
+	if err := settled(t, p).RunOnce(context.Background()); err != nil { // the fixture's rows
 		t.Fatal(err)
 	}
 	stub.calls = nil
@@ -63,14 +63,14 @@ func TestALateCommitIsntSkipped(t *testing.T) {
 	titleUpdate(t, slow, f.adminID, f.taskID, "SLOW-TX TITLE")
 	dispatch(t, f, api.SubRequest{ID: "u", Endpoint: "attribute", Action: "update",
 		Data: json.RawMessage(fmt.Sprintf(`{"card_id":"%d","attribute_name":"description","value":"QUICK EDIT"}`, f.taskID))}, nil)
-	if err := p.RunOnce(ctx); err != nil {
+	if err := p.RunOnce(ctx); err != nil { // while a transaction of ours is open: not settled
 		t.Fatal(err)
 	}
 	if err := slow.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 3; i++ {
-		if err := p.RunOnce(ctx); err != nil {
+		if err := settled(t, p).RunOnce(ctx); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -124,14 +124,14 @@ func TestAnOlderTransactionsLaterRowWaitsItsTurn(t *testing.T) {
 	if err := older.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.RunOnce(ctx); err != nil {
+	if err := p.RunOnce(ctx); err != nil { // while a transaction of ours is open: not settled
 		t.Fatal(err)
 	}
 	if err := younger.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 3; i++ {
-		if err := p.RunOnce(ctx); err != nil {
+		if err := settled(t, p).RunOnce(ctx); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -173,7 +173,7 @@ func TestAUnitFromBeforeCarriesOn(t *testing.T) {
 	p := activitysink.NewMSGraphPumperForTest(f.sp, sinkID, f.projectID, time.Second)
 	p.SetPoster(stub.post)
 	for i := 0; i < 2; i++ {
-		if err := p.RunOnce(ctx); err != nil {
+		if err := settled(t, p).RunOnce(ctx); err != nil {
 			t.Fatal(err)
 		}
 	}

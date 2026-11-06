@@ -216,6 +216,19 @@ func TestSinkSetRejectsBadFilter(t *testing.T) {
 
 // ---- pumper tests ----
 
+// settled returns p once every transaction open when it was called has
+// ended, so a RunOnce on it reads all the test has written (see
+// activitysink.SettleForTest: other packages' tests share the database
+// under `go test ./...`). Don't use it while the test holds a write
+// transaction of its own open; it would wait for that one too.
+func settled(t *testing.T, p *activitysink.Pumper) *activitysink.Pumper {
+	t.Helper()
+	if err := activitysink.SettleForTest(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 // stubPoster records every call and lets the test drive the return
 // value to simulate transient / permanent failures.
 type stubPoster struct {
@@ -236,7 +249,7 @@ func TestPumperSkipsWhenDisabledAdmin(t *testing.T) {
 	stub := &stubPoster{}
 	p := activitysink.NewMSGraphPumperForTest(f.sp, sinkID, f.projectID, time.Second)
 	p.SetPoster(stub.post)
-	if err := p.RunOnce(context.Background()); err != nil {
+	if err := settled(t, p).RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
 	if len(stub.calls) != 0 {
@@ -253,7 +266,7 @@ func TestPumperPushesAndAdvancesPointer(t *testing.T) {
 	p.SetPoster(stub.post)
 	p.SetBatchLimit(10_000) // drain the fixture in one tick
 
-	if err := p.RunOnce(context.Background()); err != nil {
+	if err := settled(t, p).RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
 	if len(stub.calls) == 0 {
@@ -267,7 +280,7 @@ func TestPumperPushesAndAdvancesPointer(t *testing.T) {
 	// A second RunOnce with no new activity should be a no-op for both
 	// the pointer (already at the high-water mark) and the poster.
 	priorCalls := len(stub.calls)
-	if err := p.RunOnce(context.Background()); err != nil {
+	if err := settled(t, p).RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce idle: %v", err)
 	}
 	if len(stub.calls) != priorCalls {
@@ -288,7 +301,7 @@ func TestPumperAppliesFilter(t *testing.T) {
 	p := activitysink.NewMSGraphPumperForTest(f.sp, sinkID, f.projectID, time.Second)
 	p.SetPoster(stub.post)
 	p.SetBatchLimit(10_000)
-	if err := p.RunOnce(context.Background()); err != nil {
+	if err := settled(t, p).RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
 	if len(stub.calls) != 0 {
@@ -309,7 +322,7 @@ func TestPumperMarksFaultOnPermanentError(t *testing.T) {
 	p := activitysink.NewMSGraphPumperForTest(f.sp, sinkID, f.projectID, time.Second)
 	p.SetPoster(stub.post)
 
-	err := p.RunOnce(context.Background())
+	err := settled(t, p).RunOnce(context.Background())
 	if err == nil {
 		t.Fatal("expected permanent error from RunOnce")
 	}
