@@ -37,8 +37,9 @@ func TestALargePageCantTakeTheBuilderDown(t *testing.T) {
 		t.Fatalf("a 600 KB page text: %+v, want validation", sr)
 	}
 
-	// Stored past the write cap some other way, and a placeholder bomb.
-	for _, body := range []string{strings.Repeat("- a\n", (2<<20)/4), strings.Repeat("{{<nav>}}", (400<<10)/9)} {
+	// Stored past the write cap some other way, and a placeholder bomb (under
+	// the 1 MB body cap; this site's nav makes it pass the 2 MB expanded cap).
+	for _, body := range []string{strings.Repeat("- a\n", (2<<20)/4), strings.Repeat("{{<nav>}}", (900<<10)/9)} {
 		if _, err := f.sp.P.Exec(ctx, `
 			UPDATE attribute_value SET value = to_jsonb($2::text)
 			WHERE card_id = $1 AND attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'description')`, f.guide, body); err != nil {
@@ -51,9 +52,9 @@ func TestALargePageCantTakeTheBuilderDown(t *testing.T) {
 		}
 		var fails int
 		var lastErr *string
-		var warnings []byte
+		var warnings string
 		if err := f.sp.P.QueryRow(ctx, `
-			SELECT ps.fail_count, ps.last_error, COALESCE(b.warnings::text, '[]')::bytea
+			SELECT ps.fail_count, ps.last_error, COALESCE(b.warnings::text, '[]')
 			FROM portal_state ps LEFT JOIN portal_build b ON b.id = ps.active_build_id
 			WHERE ps.portal_id = $1`, prod).Scan(&fails, &lastErr, &warnings); err != nil {
 			t.Fatal(err)

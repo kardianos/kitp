@@ -86,11 +86,19 @@ func TestBuildErrorsAndLock(t *testing.T) {
 		}
 		return msg, n
 	}
+	// A try is counted before the build (markAttempt); recordError says
+	// what went wrong.
+	if err := b.markAttempt(ctx, portalID); err != nil {
+		t.Fatal(err)
+	}
 	if err := b.recordError(ctx, portalID, errors.New(`insert files: ERROR: duplicate key value violates "portal_build_file_pkey"`)); err != nil {
 		t.Fatal(err)
 	}
 	if msg, n := lastError(); strings.Contains(msg, "pkey") || !strings.Contains(msg, "server log") || n != 1 {
 		t.Errorf("an internal error recorded as %q (fail_count %d)", msg, n)
+	}
+	if err := b.markAttempt(ctx, portalID); err != nil {
+		t.Fatal(err)
 	}
 	if err := b.recordError(ctx, portalID, &TemplateProblem{errors.New("page.html:3: unexpected EOF")}); err != nil {
 		t.Fatal(err)
