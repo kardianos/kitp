@@ -112,8 +112,11 @@ still open, and what a deployment of those commits needs to know.
 - **The cross-origin check is on in every mode,** `AUTH_MODE=off` and CORS
   included. A dev app served from another origin goes in
   `KITP_TRUSTED_ORIGINS`.
-- **Sign-in starts are limited:** 20 a minute per address (bursts of 40)
-  and 1,200 a minute overall; past that, 429.
+- **Sign-in starts are limited:** 20 a minute per address (bursts of 40);
+  past that, 429. There is no overall limit: a start writes nothing to the
+  database (its state is sealed in a cookie), and the overall budget let
+  anyone stop every new sign-in (review 2026-11-06 #3). A sign-in started
+  before a restart of a kitpd without `KITP_LINK_SECRET` starts again.
 - **`activity.select` with neither a card nor a project** covers the last
   30 days by default and at most 92.
 - **Unfileable mail goes to the IMAP folder `kitp-set-aside`.** Name
@@ -144,3 +147,72 @@ still open, and what a deployment of those commits needs to know.
   message after the deploy; a recipient the server refuses is left off
   while the rest get the message, and the thread shows the message as
   "sent, but refused for …" (`reply_refused`).
+
+## Security review 2026-11-06
+
+A dedicated security review (outsiders and signed-in users going beyond
+their rights) covered d33a010, 5e9ad58, 823f78e and the whole
+application. Its 23 findings are fixed in the commits after `823f78e`,
+except as noted below.
+
+### Left open
+
+- **Default proxy trust (L8).** With `KITP_TRUSTED_PROXIES` unset, any
+  private or loopback peer is believed in `X-Forwarded-For` and PROXY
+  headers, so a client on the same private network (a pod, the VPN, the
+  LAN) can choose the address its sign-in and logout limits count. kitp
+  keeps the default because production relies on it (Traefik's pod
+  address). **Set `KITP_TRUSTED_PROXIES` to the proxy's own range** — the
+  Traefik pods' CIDR — and the rest of the private network stops being
+  believed.
+- **Outgoing-server error text.** A failed SMTP or IMAP connection's error,
+  the server's first line included, is stored in the Comm log. Only
+  workspace admins see it, and only they set the servers now.
+- **Not fixed, worth knowing:**
+  - `KITP_INIT_ADMIN_EMAIL` stays set in production. At a boot with no
+    live workspace admin, recovery makes a login for that email that the
+    IdP's holder of the address can attach to. Unset it once an admin
+    exists.
+  - Traefik runs `--api.insecure=true` on `NODE_IP:9000`: an
+    unauthenticated dashboard where it can be reached (outside kitp).
+  - The owner / agent upload hand-over is 7 days (823f78e; it was 1): an
+    agent reads files its owner uploaded and never attached for that long.
+  - PDFs are shown inline on the app origin without a sandbox (exposure to
+    PDF-viewer bugs); `_files` responses carry two `sandbox` directives.
+  - Portal builds hold every rendered page in memory (a few thousand
+    pages is a lot); `POST /api/v1/cas/chunk` has no per-account quota
+    before the reaper's grace runs out.
+  - The MS Graph token cache is keyed by tenant and client, not the
+    secret; the ZIP export names every actor's login email; a batch has
+    no cap on sub-requests.
+  - Front-channel logout's `sid` is the same for every app in the
+    browser's Entra session: another app's operator holding the user's ID
+    token can sign them out of kitp (how the spec works).
+
+### Deploying the fixes
+
+- **Sign-in state is a sealed cookie** (AES-GCM; key from
+  `KITP_LINK_SECRET`, else per process). A sign-in in flight across the
+  deploy starts again. `oidc_state` gets no new rows; the reaper empties
+  it.
+- **A write aimed at a card that doesn't exist yet is refused**
+  (`card_not_found`) before the batch runs.
+- **Mail accounts and activity sinks are workspace-admin only** through
+  every generic write (`attribute.update`, `card.insert` / `delete` /
+  `undelete` / `merge`), as their own screens already were.
+- **Naming a person** on a task (originator, assignee) or a thread
+  (recipients) needs them to be someone you can see, a member of the
+  project, or already named in it. Workspace-wide roles see everyone, so
+  nothing changes for them.
+- **A page's text is at most 512 KB**; one stored larger is published
+  empty with a warning. A portal build counts as failed until it finishes
+  (so a build that dies backs off) and has 2 minutes.
+- **Email addresses:** codes are HMAC'd (pending codes from before the
+  deploy stop working; send a new one), counted per send, and sent only
+  while the account-emails mailbox is enabled. Migration
+  `0043_person_email_orphans` removes the addresses of deleted people and
+  of people with no live login.
+- **Mail from a kitp user's address is never sent on** (`relay_skipped`
+  `sender_is_user`); staff write in kitp.
+- **`dev-login`** (`AUTH_MODE=off` only) answers on localhost, loopback
+  and the hosts of `KITP_PUBLIC_URL` / `KITP_TRUSTED_ORIGINS`.

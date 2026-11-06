@@ -248,6 +248,16 @@ func (p *filer) relayReplyTx(ctx context.Context, tx store.Querier, snap *schema
 	if _, fromSelf := senders[own]; fromSelf {
 		return skip("own_address")
 	}
+	// A kitp user writes in kitp, as copies never go to them (R3). Mail
+	// that says it is from one isn't sent on: its From isn't
+	// authenticated, and the copy would go to the thread's people as
+	// "Carol via Support" from the organisation's own address — passing
+	// DMARC for whoever forged it (review 2026-11-06 #8). It is filed.
+	if isUser, err := senderIsUser(ctx, tx, sender); err != nil {
+		return err
+	} else if isUser {
+		return skip("sender_is_user")
+	}
 	// At most maxRelaysPerHour copies per thread in an hour: a sender who
 	// may be sent on can otherwise make the account mail everyone on the
 	// thread as fast as they write (review 2026-11-03 round 4).
@@ -472,6 +482,33 @@ func loadChannelSender(ctx context.Context, tx store.Querier, channelID int64) (
 // relayRecipients returns the email addresses of the thread's people (its
 // comm_recipients, in order, each address once) who are not kitp users and
 // not in reached (lowercased addresses the message already went to).
+// senderIsUser: addr is a kitp user's — a login's email, or the primary or
+// a verified address of a person linked to a login.
+func senderIsUser(ctx context.Context, tx store.Querier, addr string) (bool, error) {
+	row, err := namedRow(ctx, tx, `
+		SELECT EXISTS (
+			SELECT 1 FROM user_account ua
+			WHERE lower(ua.email) = :addr AND ua.deleted_at IS NULL
+			UNION ALL
+			SELECT 1 FROM user_account_person uap
+			JOIN attribute_value av ON av.card_id = uap.person_card_id
+			JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'email'
+			WHERE lower(btrim(av.value #>> '{}')) = :addr
+			UNION ALL
+			SELECT 1 FROM person_email pe
+			JOIN user_account_person uap ON uap.person_card_id = pe.person_card_id
+			WHERE pe.email = :addr AND pe.verified_at IS NOT NULL)
+	`, map[string]any{"addr": strings.ToLower(addr)})
+	if err != nil {
+		return false, fmt.Errorf("relay: is the sender a user: %w", err)
+	}
+	var is bool
+	if err := row.Scan(&is); err != nil {
+		return false, fmt.Errorf("relay: is the sender a user: %w", err)
+	}
+	return is, nil
+}
+
 func relayRecipients(ctx context.Context, tx store.Querier, commID int64, reached map[string]struct{}) ([]string, error) {
 	b := named.New()
 	b.Set("comm", commID)

@@ -98,11 +98,22 @@ func (b *Builder) RunOnce(ctx context.Context) error {
 		if !ok {
 			continue
 		}
+		// The try counts before it starts: a build that never finishes —
+		// past the tick's deadline, or kitpd killed for its memory — then
+		// backs off like a failed one instead of starting again at every
+		// tick and every boot (review 2026-11-06 #6). Success clears it.
+		if err := b.markAttempt(ctx, d.id); err != nil {
+			release()
+			return fmt.Errorf("portal.build: mark %d: %w", d.id, err)
+		}
 		if _, err := b.Build(ctx, d.id, d.since); err != nil {
 			b.logger().Warn("portal build failed", "portal_id", d.id, "err", err)
-			if rerr := b.recordError(ctx, d.id, err); rerr != nil {
+			// On its own context: the tick's may be what ran out.
+			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			if rerr := b.recordError(rctx, d.id, err); rerr != nil {
 				b.logger().Warn("portal build: record error", "portal_id", d.id, "err", rerr)
 			}
+			cancel()
 		}
 		release()
 	}
@@ -307,6 +318,26 @@ func (b *Builder) Build(ctx context.Context, portalID int64, since time.Time) (i
 	return buildID, nil
 }
 
+// markAttempt counts a build try as failed before it starts (RunOnce); a
+// build that finishes clears it, one that fails names its error.
+func (b *Builder) markAttempt(ctx context.Context, portalID int64) error {
+	q := named.New()
+	q.Set("portal", portalID)
+	sql, args, err := q.Compile(`
+		UPDATE portal_state
+		SET fail_count = fail_count + 1, failed_at = now(),
+		    last_error = COALESCE(last_error, 'The last build didn''t finish; the server log has the details.')
+		WHERE portal_id = :portal`)
+	if err != nil {
+		return fmt.Errorf("compile: %w", err)
+	}
+	if _, err := b.Pool.Exec(ctx, sql, args...); err != nil {
+		return fmt.Errorf("mark: %w", err)
+	}
+	return nil
+}
+
+// recordError names a failed build's error; markAttempt already counted it.
 func (b *Builder) recordError(ctx context.Context, portalID int64, cause error) error {
 	// portal.list shows last_error to admins: a theme's own template
 	// problem as it is (they fix it), anything else as a pointer to the
@@ -321,7 +352,7 @@ func (b *Builder) recordError(ctx context.Context, portalID int64, cause error) 
 	q.Set("msg", msg)
 	sql, args, err := q.Compile(`
 		UPDATE portal_state
-		SET last_error = :msg, fail_count = fail_count + 1, failed_at = now()
+		SET last_error = :msg
 		WHERE portal_id = :portal`)
 	if err != nil {
 		return fmt.Errorf("compile: %w", err)

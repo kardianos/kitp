@@ -809,6 +809,10 @@ const tocMarker = "KITPTOCMARKER7f3a"
 // this list (web/src/bundles/placeholders.ts): add a placeholder in both.
 func (r *renderer) expandPlaceholders(n *node, warn func(string, ...any)) (string, error) {
 	body := n.page.Body
+	if len(body) > maxBodyBytes {
+		warn("is too large to publish (over %d KB of text); published without its text", maxBodyBytes>>10)
+		return "", nil
+	}
 	code, err := codeRanges(r.md, []byte(body))
 	if err != nil {
 		return "", err
@@ -822,6 +826,10 @@ func (r *renderer) expandPlaceholders(n *node, warn func(string, ...any)) (strin
 		b.WriteString(body[last:m[0]])
 		last = m[1]
 		name, arg := body[m[2]:m[3]], strings.TrimSpace(body[m[4]:m[5]])
+		if b.Len() > maxExpandedBytes {
+			warn("its placeholders make it too large to publish (over %d KB); published without its text", maxExpandedBytes>>10)
+			return "", nil
+		}
 		switch name {
 		case "children":
 			b.WriteString(mdList(n, n.children, 1, false))
@@ -841,8 +849,23 @@ func (r *renderer) expandPlaceholders(n *node, warn func(string, ...any)) (strin
 		}
 	}
 	b.WriteString(body[last:])
+	if b.Len() > maxExpandedBytes {
+		warn("its placeholders make it too large to publish (over %d KB); published without its text", maxExpandedBytes>>10)
+		return "", nil
+	}
 	return b.String(), nil
 }
+
+// maxBodyBytes caps a page's own text, and maxExpandedBytes what its
+// placeholders make of it ({{< nav >}} is the whole site's list each
+// time): goldmark builds a page in memory at about 200 bytes per byte of a
+// list, so one large page took kitpd down at every build (review
+// 2026-11-06 #6). attribute.update and card.insert refuse a page text past
+// 512 KB; one stored before that is published empty, with a warning.
+const (
+	maxBodyBytes     = 1 << 20
+	maxExpandedBytes = 2 << 20
+)
 
 // span is a half-open byte range of a page body.
 type span struct{ start, stop int }

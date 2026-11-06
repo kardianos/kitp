@@ -26,6 +26,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"syscall"
 )
 
 // loadAllowlist parses KITP_COMM_HOST_ALLOWLIST into a lookup set on
@@ -64,13 +65,79 @@ var ipResolver = func(ctx context.Context, host string) ([]net.IP, error) {
 // IPv6 fe80::/10), unspecified (0.0.0.0 / ::), or interface-local
 // multicast. These cover the cloud metadata endpoint and internal
 // services an SSRF would target.
+// Beyond those, the shared and special ranges in blockedNets (carrier-grade
+// NAT and Tailscale's 100.64/10 with 100.100.100.200, benchmarking
+// 198.18/15, "this network" 0/8, reserved 240/4, IETF 192.0.0/24, and
+// IPv4-compatible ::/96 such as ::a9fe:a9fe), and a NAT64 address
+// (64:ff9b::/96) is judged by the IPv4 address it carries (review
+// 2026-11-06 L3).
 func isBlockedIP(ip net.IP) bool {
-	return ip.IsLoopback() ||
+	if nat64.Contains(ip) && ip.To4() == nil {
+		return isBlockedIP(net.IP(ip[12:16]).To16())
+	}
+	if ip.IsLoopback() ||
 		ip.IsPrivate() ||
 		ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() ||
 		ip.IsUnspecified() ||
-		ip.IsInterfaceLocalMulticast()
+		ip.IsInterfaceLocalMulticast() {
+		return true
+	}
+	for _, n := range blockedNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	blockedNets = mustCIDRs("0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "198.18.0.0/15", "240.0.0.0/4", "::/96")
+	nat64       = mustCIDRs("64:ff9b::/96")[0]
+)
+
+func mustCIDRs(cidrs ...string) []*net.IPNet {
+	out := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			panic(fmt.Sprintf("dialguard: %s: %v", c, err)) // a constant above
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// guardedDialer gives d a Control that checks the address the socket
+// actually connects to, after resolution: guardDialHost resolves the name
+// once and the dial resolves it again, so a name that answers with a
+// public address first and an internal one next (DNS rebinding) got
+// through (review 2026-11-06 L3). An allowlisted host, or a connected IP on
+// the allowlist, passes.
+func guardedDialer(host string, d *net.Dialer) *net.Dialer {
+	allow := loadAllowlist()
+	h := strings.ToLower(strings.TrimSpace(host))
+	if _, ok := allow[h]; ok {
+		return d
+	}
+	d.Control = func(_, address string, _ syscall.RawConn) error {
+		ipStr, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return fmt.Errorf("comm: dial address %q: %w", address, err)
+		}
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			return fmt.Errorf("comm: dial address %q is not an IP", address)
+		}
+		if _, ok := allow[ip.String()]; ok {
+			return nil
+		}
+		if isBlockedIP(ip) {
+			return fmt.Errorf("comm: refusing to dial %q — connects to blocked address %s (SSRF guard; allowlist via KITP_COMM_HOST_ALLOWLIST)", host, ip)
+		}
+		return nil
+	}
+	return d
 }
 
 // guardDialHost resolves host and returns an error if any resolved

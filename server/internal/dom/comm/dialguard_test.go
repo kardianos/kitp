@@ -18,17 +18,27 @@ func TestGuardDialHost_LiteralIPs(t *testing.T) {
 		host    string
 		blocked bool
 	}{
-		{"127.0.0.1", true},        // loopback
-		{"169.254.169.254", true},  // cloud metadata (link-local)
-		{"10.1.2.3", true},         // RFC1918
-		{"192.168.0.5", true},      // RFC1918
-		{"172.16.9.9", true},       // RFC1918
-		{"0.0.0.0", true},          // unspecified
-		{"::1", true},              // IPv6 loopback
-		{"fe80::1", true},          // IPv6 link-local
-		{"fd00::1", true},          // IPv6 ULA (private)
-		{"8.8.8.8", false},         // public
-		{"93.184.216.34", false},   // public (example.com)
+		{"127.0.0.1", true},       // loopback
+		{"169.254.169.254", true}, // cloud metadata (link-local)
+		{"10.1.2.3", true},        // RFC1918
+		{"192.168.0.5", true},     // RFC1918
+		{"172.16.9.9", true},      // RFC1918
+		{"0.0.0.0", true},         // unspecified
+		{"::1", true},             // IPv6 loopback
+		{"fe80::1", true},         // IPv6 link-local
+		{"fd00::1", true},         // IPv6 ULA (private)
+		{"8.8.8.8", false},        // public
+		{"93.184.216.34", false},  // public (example.com)
+		// review 2026-11-06 L3:
+		{"100.64.0.1", true},             // carrier-grade NAT / Tailscale
+		{"100.100.100.200", true},        // Tailscale's metadata-style service
+		{"198.18.0.1", true},             // benchmarking
+		{"0.1.2.3", true},                // "this network"
+		{"240.0.0.1", true},              // reserved
+		{"::a9fe:a9fe", true},            // IPv4-compatible metadata address
+		{"::ffff:169.254.169.254", true}, // IPv4-mapped metadata address
+		{"64:ff9b::a9fe:a9fe", true},     // NAT64 of the metadata address
+		{"64:ff9b::808:808", false},      // NAT64 of a public address
 	}
 	for _, tc := range cases {
 		resetAllowlist(t, "")
@@ -89,4 +99,46 @@ func TestGuardDialHost_ResolvedName(t *testing.T) {
 func resetAllowlist(t *testing.T, value string) {
 	t.Helper()
 	t.Setenv("KITP_COMM_HOST_ALLOWLIST", value)
+}
+
+// TestGuardedDialerChecksTheConnectedAddress (review 2026-11-06 L3): a name
+// guardDialHost resolves to a public address but the dial resolves to an
+// internal one (DNS rebinding) is refused at connect time.
+func TestGuardedDialerChecksTheConnectedAddress(t *testing.T) {
+	resetAllowlist(t, "")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = c.Write([]byte("220 internal-service-banner\r\n")) // a test listener; the write's error doesn't matter
+			c.Close()
+		}
+	}()
+	prev := ipResolver
+	ipResolver = func(context.Context, string) ([]net.IP, error) { return []net.IP{net.ParseIP("93.184.216.34")}, nil }
+	t.Cleanup(func() { ipResolver = prev })
+	if err := guardDialHost(context.Background(), "localhost"); err != nil {
+		t.Fatalf("the check-time answer is public: %v", err)
+	}
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	d := guardedDialer("localhost", &net.Dialer{})
+	if c, err := d.DialContext(context.Background(), "tcp", net.JoinHostPort("localhost", port)); err == nil {
+		c.Close()
+		t.Fatal("the dial reached 127.0.0.1")
+	} else if !strings.Contains(err.Error(), "blocked address") {
+		t.Fatalf("dial error %v, want the guard's", err)
+	}
+	resetAllowlist(t, "localhost")
+	c, err := guardedDialer("localhost", &net.Dialer{}).DialContext(context.Background(), "tcp", net.JoinHostPort("localhost", port))
+	if err != nil {
+		t.Fatalf("an allowlisted host: %v", err)
+	}
+	c.Close()
 }

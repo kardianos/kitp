@@ -2505,7 +2505,7 @@ func dialIMAP(ctx context.Context, cfg IMAPConfig) (imapClient, error) {
 		return nil, err
 	}
 	addr := net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", cfg.Port))
-	dialer := &net.Dialer{Timeout: 30 * time.Second}
+	dialer := guardedDialer(cfg.Host, &net.Dialer{Timeout: 30 * time.Second})
 	if deadline, ok := ctx.Deadline(); ok {
 		dialer.Timeout = time.Until(deadline)
 	}

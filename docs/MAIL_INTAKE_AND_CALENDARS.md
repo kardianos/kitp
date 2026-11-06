@@ -696,6 +696,12 @@ Ada ──reply──▶ support@ ──▶ filed on the thread
   confirms nobody: `reply.post` writes to everyone on the thread, including
   whoever a received message put there.
 
+  Mail whose From is a kitp user's (a login's email, or the primary or a
+  verified address of a person with a login) is never sent on
+  (`sender_is_user`): kitp users write in kitp (R3), and an unauthenticated
+  From could otherwise go out as "Carol via Support" from the account's own
+  address (review 2026-11-06 #8). It is filed as usual.
+
   The sender must be confirmed (`sender_unconfirmed`) and on the thread
   before this message (`sender_not_on_thread`; `processOne` reads the
   recipients before filing); the copy goes to the confirmed people on the

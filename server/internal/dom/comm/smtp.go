@@ -1389,7 +1389,7 @@ func sendSMTP(ctx context.Context, host string, port int, username, password, fr
 		return err
 	}
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-	d := net.Dialer{Timeout: 15 * time.Second}
+	d := guardedDialer(host, &net.Dialer{Timeout: 15 * time.Second})
 	rawConn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("smtp dial %s: %w", addr, err)

@@ -761,6 +761,9 @@ func runHTTP() error {
 			Description: "Render every portal whose published pages or settings changed into a static build and switch it live.",
 			OnStartup:   true,
 			Interval:    time.Duration(envInt("KITP_PORTAL_BUILD_TICK_SEC", 5)) * time.Second,
+			// Not the tick: a large site takes longer than 5 s, and a build
+			// cut off at its deadline counts as failed (review 2026-11-06 #6).
+			Timeout: 2 * time.Minute,
 			Run: func(ctx context.Context, _ *pgxpool.Pool, _ struct{}) error {
 				return portalBuilder.RunOnce(ctx)
 			},
