@@ -4882,6 +4882,158 @@ select optgroup {
 .record-form__caption {
   font-size: var(--text-xs);
 }
+/* A section (kind 'heading' and the fields up to the next one): a card,
+   its title and hint at the top. */
+.record-form__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+.record-form__heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-h);
+}
+.record-form__heading-title {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: var(--weight-bold);
+  color: var(--color-fg-strong);
+}
+/* The choice a section turns on (Send with): a larger, accented control. */
+.record-form__field--prominent .record-form__select,
+.record-form__field--prominent .record-form__input {
+  max-width: 28rem;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-md);
+  font-weight: 600;
+  border: 1.5px solid var(--color-accent);
+  background-color: var(--color-accent-tint);
+  cursor: pointer;
+}
+/* A chevron, so the choice reads as a dropdown at a glance. */
+.record-form__field--prominent .record-form__select {
+  appearance: none;
+  padding-right: 2.5rem;
+  /* A file, not a data: URL: the app's CSP allows only same-origin images. */
+  background-image: url("/assets/chevron-down.svg");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+}
+.record-form__field--prominent .record-form__select:hover,
+.record-form__field--prominent .record-form__select:focus-visible {
+  border-color: var(--color-accent-strong);
+  box-shadow: 0 0 0 3px var(--color-accent-soft);
+  outline: none;
+}
+.record-form__field--prominent .record-form__label {
+  color: var(--color-fg);
+  font-weight: 600;
+}
+/* What a choice above shows: indented, a line down its left. */
+.record-form__indent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-left: var(--space-2);
+  padding: var(--space-1) 0 var(--space-1) var(--space-4);
+  border-left: 2px solid var(--color-accent-ring);
+}
+/* Side by side (fields with a column): the ways something can go, each a
+   panel; they stack when the pane is narrow. */
+.record-form__columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  gap: var(--space-3);
+  align-items: start;
+}
+.record-form__column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+}
+.record-form__control .mi-routes {
+  margin-top: 0;
+}
+/* In the form the routes' title reads like the other way in's. */
+.record-form__control .mi-routes__heading {
+  font-size: var(--text-sm);
+  letter-spacing: normal;
+  color: var(--color-fg);
+}
+/* A readonly with a toneField: a status banner. */
+.record-form__field--banner {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border-left: 3px solid var(--color-border);
+  background: var(--color-surface-sunken);
+}
+.record-form__field--banner .record-form__readonly {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-fg-strong);
+}
+.record-form__field--tone-ok {
+  border-left-color: var(--color-success);
+  background: var(--color-success-soft);
+}
+.record-form__field--tone-warn {
+  border-left-color: var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 12%, transparent);
+}
+/* Reference blocks (kind 'details'): collapsed, code in monospace. */
+.record-form__details {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
+}
+.record-form__details > summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-fg);
+}
+.record-form__details-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-top: var(--space-3);
+}
+.record-form__details-block p {
+  margin: 0;
+}
+.record-form__details-block h5 {
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--color-fg-strong);
+}
+.record-form__code {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  overflow-x: auto;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  white-space: pre;
+}
+.record-form__notice {
+  margin: 0;
+  font-size: var(--text-xs);
+}
 .record-form__check {
   display: inline-flex;
   align-items: center;

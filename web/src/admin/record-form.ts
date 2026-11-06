@@ -22,6 +22,20 @@
  *     values (e.g. Teams-only fields on an activity sink);
  *   - `optionsFrom.alsoSet` copies fields of the picked option's row into the
  *     draft (e.g. picking a sink also sets the record's project);
+ *   - `heading` starts a section — a card holding the fields up to the next
+ *     heading — with its label and hint at the top (no draft value);
+ *   - layout, as data on the fields: `prominent` (a larger control, for the
+ *     choice a section turns on), `indent` (consecutive indented fields sit
+ *     in a group with a line on the left — what a choice above them shows),
+ *     `column` 1 / 2 (consecutive fields with one side by side, stacking on
+ *     a narrow pane), and `hintByValue` (a select's caption for the value
+ *     picked);
+ *   - `control` mounts another control in place (kept across re-renders,
+ *     e.g. a mail account's delivery routes); `details` a collapsed block of
+ *     reference text and code examples; a readonly's `toneField` styles it
+ *     as a status banner;
+ *   - an action's `doneText` says what it did, under the buttons, until
+ *     another record is picked;
  *   - `activityFilter` / `cardFilter` mount the shared ActivityFilterEditor /
  *     PredicateFilter controls; their state lives in tree leaves under
  *     `${scopeKey}.fields.<name>` (the child controls read/write the tree) and is
@@ -39,6 +53,9 @@ import {
 import { loadRefOptions } from '../filter/ref-options.js';
 
 export type RecordFormFieldKind =
+  | 'heading'
+  | 'control'
+  | 'details'
   | 'text'
   | 'textarea'
   | 'secret'
@@ -96,6 +113,27 @@ export interface RecordFormField {
   /** 'activityFilter' / 'cardFilter': extra config merged into the spawned
    *  editor control's config (e.g. `{ actorChoices }` for the event filter). */
   editor?: Record<string, unknown>;
+  /** A larger control: the choice the section's other fields follow. */
+  prominent?: boolean;
+  /** In the indented group (a line on the left) with the consecutive
+   *  indented fields around it. */
+  indent?: boolean;
+  /** Side by side: consecutive fields with a column sit in two columns. */
+  column?: 1 | 2;
+  /** 'select': the caption for the picked value (instead of `hint`). */
+  hintByValue?: Record<string, string>;
+  /** 'readonly': the draft key whose value ('ok' | 'warn' | 'none') makes it
+   *  a status banner of that tone. */
+  toneField?: string;
+  /** 'control': the control mounted in place, given `parentScope` (this
+   *  form's master) and its own `scopeKey`; kept across re-renders. `newText`
+   *  shows instead while a new record is unsaved. */
+  control?: { type: string; config?: Record<string, unknown>; newText?: string };
+  /** 'details': collapsed reference blocks — a title, text, a code sample. */
+  details?: ReadonlyArray<{ title: string; text?: string; code?: string }>;
+  /** At the form's own level, ending the section before it (e.g. reference
+   *  text at the foot of the form). */
+  standalone?: boolean;
 }
 
 /** Inline-confirmed delete of the selected record. */
@@ -121,6 +159,9 @@ export interface RecordFormAction {
   toInput?: (draft: Record<string, unknown>) => Record<string, unknown>;
   /** Open this URL in a new tab instead; null hides the action. */
   href?: (draft: Record<string, unknown>) => string | null;
+  /** What to say once the call succeeded (its decoded output), shown under
+   *  the buttons until another record is picked. */
+  doneText?: (out: unknown) => string;
 }
 
 /** The screen-facing config (parentScope + scopeKey are injected by MasterDetail). */
@@ -237,6 +278,11 @@ export class RecordForm extends Control<RecordFormConfig> {
   private fieldChildren: Control[] = [];
   /** The inline delete-confirm is showing. */
   private confirmingDelete = false;
+  /** What the last action said it did (`doneText`), for the record it ran on. */
+  private notice: { id: string; text: string } | null = null;
+  /** `control` fields' hosts and controls, mounted once and re-attached on
+   *  each render (so a re-render doesn't reload them). */
+  private controlHosts = new Map<string, HTMLElement>();
 
   private formHost!: HTMLElement;
 
@@ -271,6 +317,7 @@ export class RecordForm extends Control<RecordFormConfig> {
       // items-only change (e.g. an unrelated edit) keeps the live draft so the
       // user's in-progress edit / + New isn't wiped.
       if (sel !== this.lastSel) {
+        if (sel !== null && this.notice !== null && this.notice.id !== sel) this.notice = null;
         this.lastSel = sel;
         this.creatingNew = false;
         this.confirmingDelete = false;
@@ -343,6 +390,7 @@ export class RecordForm extends Control<RecordFormConfig> {
         this.draft = this.config.emptyDraft();
         this.creatingNew = true;
         this.confirmingDelete = false;
+        this.notice = null;
         this.needsSeed = true;
         this.row = {};
         this.renderForm();
@@ -375,10 +423,7 @@ export class RecordForm extends Control<RecordFormConfig> {
     // Filter editors mount after the fields are in the fragment (spawn needs
     // the host element; the host is appended to the form below).
     const pendingSpawns: Array<() => void> = [];
-    for (const f of this.config.fields) {
-      if (!fieldVisible(f, draft)) continue;
-      form.append(this.renderField(f, draft, pendingSpawns));
-    }
+    this.layoutFields(form, draft, pendingSpawns);
 
     const err = document.createElement('div');
     err.className = 'record-form__error';
@@ -403,32 +448,177 @@ export class RecordForm extends Control<RecordFormConfig> {
     }
     if (this.config.delete && !this.creatingNew) actions.append(this.buildDelete(this.config.delete, err));
     form.append(actions);
+    if (this.notice !== null && !this.creatingNew && this.notice.id === asText(draft['id'])) {
+      const done = document.createElement('p');
+      done.className = 'record-form__notice muted';
+      done.dataset.recordFormNotice = '';
+      done.setAttribute('role', 'status');
+      done.textContent = this.notice.text;
+      form.append(done);
+    }
 
     frag.append(form);
     this.formHost.replaceChildren(frag);
     for (const spawn of pendingSpawns) spawn();
   }
 
+  /**
+   * Lay the visible fields out: a `heading` opens a section (a card) the
+   * following fields go into; consecutive `column` fields share a two-column
+   * row; consecutive `indent` fields (in the same place) share an indented
+   * group. All of it is the field table's data.
+   */
+  private layoutFields(form: HTMLElement, draft: Record<string, unknown>, pendingSpawns: Array<() => void>): void {
+    let section: HTMLElement = form;
+    let columns: HTMLElement[] | null = null;
+    let indent: { parent: HTMLElement; group: HTMLElement } | null = null;
+    for (const f of this.config.fields) {
+      if (!fieldVisible(f, draft)) continue;
+      if (f.kind === 'heading') {
+        section = document.createElement('section');
+        section.className = 'record-form__section';
+        section.dataset.recordFormSection = f.name;
+        section.append(this.renderField(f, draft, pendingSpawns));
+        form.append(section);
+        columns = null;
+        indent = null;
+        continue;
+      }
+      if (f.standalone === true) {
+        section = form;
+        columns = null;
+        indent = null;
+      }
+      let target = section;
+      if (f.column !== undefined) {
+        if (columns === null) {
+          const row = document.createElement('div');
+          row.className = 'record-form__columns';
+          columns = [document.createElement('div'), document.createElement('div')];
+          for (const c of columns) c.className = 'record-form__column';
+          row.append(...columns);
+          section.append(row);
+        }
+        target = columns[f.column - 1] as HTMLElement;
+      } else {
+        columns = null;
+      }
+      if (f.indent === true) {
+        if (indent === null || indent.parent !== target) {
+          const group = document.createElement('div');
+          group.className = 'record-form__indent';
+          target.append(group);
+          indent = { parent: target, group };
+        }
+        target = indent.group;
+      } else {
+        indent = null;
+      }
+      target.append(this.renderField(f, draft, pendingSpawns));
+    }
+  }
+
   private renderField(f: RecordFormField, draft: Record<string, unknown>, pendingSpawns: Array<() => void>): HTMLElement {
     const isEditor = f.kind === 'activityFilter' || f.kind === 'cardFilter';
     // Editors hold their own controls (buttons, selects) — a <label> wrapper
     // would forward clicks into them, so they get a plain container.
-    const wrap = document.createElement(isEditor || f.kind === 'checkbox' ? 'div' : 'label');
-    wrap.className = `record-form__field record-form__field--${f.kind}`;
+    const wrap = document.createElement(isEditor || f.kind === 'checkbox' || f.kind === 'control' || f.kind === 'details' ? 'div' : 'label');
+    wrap.className = `record-form__field record-form__field--${f.kind}${f.prominent === true ? ' record-form__field--prominent' : ''}`;
     wrap.dataset.recordFormFieldWrap = f.name;
     const span = document.createElement('span');
     span.className = 'record-form__label muted';
     span.textContent = f.label;
-    if (f.kind !== 'checkbox') wrap.append(span);
+    // A checkbox labels itself; a mounted control and a details block carry
+    // their own titles.
+    if (f.kind !== 'checkbox' && f.kind !== 'control' && f.kind !== 'details') wrap.append(span);
 
     const value = draft[f.name];
     const strValue = asText(value);
+
+    if (f.kind === 'heading') {
+      // A section's start: no input, no draft value.
+      const h = document.createElement('div');
+      h.className = 'record-form__heading';
+      h.dataset.recordFormHeading = f.name;
+      const t = document.createElement('h4');
+      t.className = 'record-form__heading-title';
+      t.textContent = f.label;
+      h.append(t);
+      this.appendHint(h, f);
+      return h;
+    }
+
+    if (f.kind === 'control' && f.control !== undefined) {
+      wrap.dataset.recordFormControl = f.name;
+      if (this.creatingNew && f.control.newText !== undefined) {
+        const p = document.createElement('p');
+        p.className = 'record-form__caption muted';
+        p.textContent = f.control.newText;
+        wrap.append(p);
+        return wrap;
+      }
+      let host = this.controlHosts.get(f.name);
+      if (host === undefined) {
+        const h = document.createElement('div');
+        h.className = 'record-form__control';
+        this.controlHosts.set(f.name, h);
+        host = h;
+        const spec = f.control;
+        pendingSpawns.push(() =>
+          this.spawn(spec.type, {
+            type: spec.type,
+            ...(spec.config ?? {}),
+            parentScope: this.config.parentScope,
+            scopeKey: `${this.config.scopeKey}.controls.${f.name}`,
+          }, h),
+        );
+      }
+      wrap.append(host);
+      return wrap;
+    }
+
+    if (f.kind === 'details') {
+      const d = document.createElement('details');
+      d.className = 'record-form__details';
+      d.dataset.recordFormDetails = f.name;
+      const sum = document.createElement('summary');
+      sum.textContent = f.label;
+      d.append(sum);
+      for (const b of f.details ?? []) {
+        const block = document.createElement('div');
+        block.className = 'record-form__details-block';
+        const t = document.createElement('h5');
+        t.textContent = b.title;
+        block.append(t);
+        if (b.text !== undefined) {
+          const p = document.createElement('p');
+          p.className = 'record-form__caption';
+          p.textContent = b.text;
+          block.append(p);
+        }
+        if (b.code !== undefined) {
+          const pre = document.createElement('pre');
+          pre.className = 'record-form__code';
+          const code = document.createElement('code');
+          code.textContent = b.code;
+          pre.append(code);
+          block.append(pre);
+        }
+        d.append(block);
+      }
+      wrap.append(d);
+      return wrap;
+    }
 
     if (f.kind === 'readonly') {
       // Display-only context (e.g. a flow's governed attribute). Reads the draft
       // first, then the raw row (for fields the draft doesn't carry).
       const ro = document.createElement('span');
       ro.className = 'record-form__readonly';
+      if (f.toneField !== undefined) {
+        const tone = asText(draft[f.toneField]);
+        wrap.classList.add('record-form__field--banner', `record-form__field--tone-${tone === '' ? 'none' : tone}`);
+      }
       ro.dataset.recordFormField = f.name;
       const display = strValue !== '' ? strValue : asText(this.row[f.name]);
       ro.textContent = display || '—';
@@ -528,7 +718,7 @@ export class RecordForm extends Control<RecordFormConfig> {
         if (this.isStructural(f.name)) this.renderForm();
       });
       wrap.append(sel);
-      this.appendHint(wrap, f);
+      this.appendHint(wrap, f, strValue);
       if (f.kind === 'selectFromQuery') this.ensureOptions(f);
       return wrap;
     }
@@ -574,12 +764,13 @@ export class RecordForm extends Control<RecordFormConfig> {
     return wrap;
   }
 
-  private appendHint(wrap: HTMLElement, f: RecordFormField): void {
-    if (f.hint === undefined) return;
+  private appendHint(wrap: HTMLElement, f: RecordFormField, value?: string): void {
+    const text = (value !== undefined ? f.hintByValue?.[value] : undefined) ?? f.hint;
+    if (text === undefined) return;
     const hint = document.createElement('span');
     hint.className = 'record-form__caption muted';
     hint.dataset.recordFormHint = f.name;
-    hint.textContent = f.hint;
+    hint.textContent = text;
     wrap.append(hint);
   }
 
@@ -702,12 +893,14 @@ export class RecordForm extends Control<RecordFormConfig> {
     this.listen(btn, 'click', () => {
       btn.disabled = true;
       err.style.display = 'none';
+      const id = asText(draft['id']);
       this.ctx.api.callByName(
         spec,
         a.toInput !== undefined ? a.toInput(draft) : {},
-        () => {
+        (out) => {
           if (!this.isAlive()) return;
           btn.disabled = false;
+          this.notice = a.doneText !== undefined ? { id, text: a.doneText(out) } : null;
           this.resetAfterWrite();
           this.reloadList();
         },

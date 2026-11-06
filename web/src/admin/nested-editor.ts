@@ -244,6 +244,77 @@ export interface CommChannelDraft {
   relayReplies: string;
   /** Files on incoming mail: 'keep' | 'drop'. */
   emailAttachments: string;
+  /** Poll a mailbox (IMAP): off sends imapEnabled=false, which clears it. */
+  imapOn: boolean;
+  /** How it sends (SEND_METHOD_OPTIONS) and that method's settings. */
+  sendMethod: string;
+  /** The method the stored secret belongs to: switching away needs a new one. */
+  storedSendMethod: string;
+  sendDomain: string;
+  sendRegion: string;
+  sendStream: string;
+  sendUrl: string;
+  /** Blank on load (write-only). */
+  sendSecret: string;
+  hasSendSecret: boolean;
+  /** Display only: the account's ways in and out (channelSetupText) and the
+   *  banner's tone (channelSetupTone). */
+  setup: string;
+  setupTone: string;
+}
+
+/** How a mail account sends (comm_channel.send_method). */
+export const SEND_METHOD_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: 'smtp', label: 'An SMTP server' },
+  { value: 'mailgun', label: 'Mailgun (HTTP API)' },
+  { value: 'postmark', label: 'Postmark (HTTP API)' },
+  { value: 'webhook', label: 'Your own endpoint (a signed POST)' },
+  { value: 'none', label: 'Doesn’t send (receive only)' },
+];
+
+/** The methods that send through an HTTP API and keep a secret for it. */
+const API_SEND_METHODS = ['mailgun', 'postmark', 'webhook'];
+
+/** Mailgun's API regions. */
+export const MAILGUN_REGION_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: 'us', label: 'US (api.mailgun.net)' },
+  { value: 'eu', label: 'EU (api.eu.mailgun.net)' },
+];
+
+/** A stored send_method as in effect: unset is SMTP (what accounts used). */
+export function effectiveSendMethod(v: string | undefined): string {
+  return SEND_METHOD_OPTIONS.some((o) => o.value === v) ? (v as string) : 'smtp';
+}
+
+function count(n: number, one: string, many: string): string {
+  return n === 1 ? `1 ${one}` : `${n === 0 ? 'no' : String(n)} ${many}`;
+}
+
+/** The setup banner's tone: 'ok' when complete, 'warn' when only one way
+ *  works, 'none' when neither. */
+export function channelSetupTone(
+  row: Pick<CommChannel, 'imapHost' | 'postRoutes' | 'smtpRoutes' | 'canSend'>,
+): 'ok' | 'warn' | 'none' {
+  const ins = (row.imapHost ?? '') !== '' || (row.postRoutes ?? 0) > 0 || (row.smtpRoutes ?? 0) > 0;
+  const out = row.canSend === true;
+  return ins && out ? 'ok' : ins || out ? 'warn' : 'none';
+}
+
+/** Whether the account is complete — a way in and a way out — in words. */
+export function channelSetupText(
+  row: Pick<CommChannel, 'imapHost' | 'postRoutes' | 'smtpRoutes' | 'sendMethod' | 'canSend'>,
+): string {
+  const ins: string[] = [];
+  if ((row.imapHost ?? '') !== '') ins.push('a mailbox (IMAP)');
+  if ((row.postRoutes ?? 0) > 0) ins.push(count(row.postRoutes ?? 0, 'POST route', 'POST routes'));
+  if ((row.smtpRoutes ?? 0) > 0) ins.push(count(row.smtpRoutes ?? 0, 'SMTP route', 'SMTP routes'));
+  const method = effectiveSendMethod(row.sendMethod);
+  const out = row.canSend === true ? SEND_METHOD_OPTIONS.find((o) => o.value === method)?.label ?? method : '';
+  const inText = ins.join(' and ');
+  if (ins.length > 0 && out !== '') return `Complete: receives from ${inText}; sends with ${out.charAt(0).toLowerCase()}${out.slice(1)}.`;
+  if (ins.length > 0) return `Receive only: receives from ${inText}, but nothing sends — replies and notifications can’t go out.`;
+  if (out !== '') return `Send only: sends with ${out.charAt(0).toLowerCase()}${out.slice(1)}; no mail comes in.`;
+  return 'Not set up: nothing comes in and nothing goes out yet.';
 }
 
 export function emptyChannelDraft(): CommChannelDraft {
@@ -261,6 +332,17 @@ export function emptyChannelDraft(): CommChannelDraft {
     // existing one without the setting doesn't (channelRowToDraft).
     relayReplies: 'on',
     emailAttachments: 'keep',
+    imapOn: true,
+    sendMethod: 'smtp',
+    storedSendMethod: 'smtp',
+    sendDomain: '',
+    sendRegion: 'us',
+    sendStream: '',
+    sendUrl: '',
+    sendSecret: '',
+    hasSendSecret: false,
+    setup: '',
+    setupTone: 'none',
   };
 }
 
@@ -290,6 +372,17 @@ export function channelRowToDraft(row: CommChannel): CommChannelDraft {
     // Unset reads as the server does: off, and keep.
     relayReplies: row.relayReplies === 'on' ? 'on' : 'off',
     emailAttachments: row.emailAttachments === 'drop' ? 'drop' : 'keep',
+    imapOn: (row.imapHost ?? '') !== '',
+    sendMethod: effectiveSendMethod(row.sendMethod),
+    storedSendMethod: effectiveSendMethod(row.sendMethod),
+    sendDomain: row.sendDomain ?? '',
+    sendRegion: row.sendRegion === 'eu' ? 'eu' : 'us',
+    sendStream: row.sendStream ?? '',
+    sendUrl: row.sendUrl ?? '',
+    sendSecret: '',
+    hasSendSecret: row.hasSendSecret === true,
+    setup: channelSetupText(row),
+    setupTone: channelSetupTone(row),
   };
 }
 
@@ -315,6 +408,17 @@ export function validateChannelDraft(d: CommChannelDraft): Record<string, string
   else if (d.channelType !== 'email') errors['channelType'] = "Channel type 'email' is the only supported value in v1.";
   if (d.imapPort !== '' && !isPositiveInt(d.imapPort)) errors['imapPort'] = 'IMAP port must be a positive integer.';
   if (d.smtpPort !== '' && !isPositiveInt(d.smtpPort)) errors['smtpPort'] = 'SMTP port must be a positive integer.';
+  if (d.sendMethod === 'mailgun' && d.sendDomain.trim() === '') errors['sendDomain'] = 'Give the Mailgun domain it sends from.';
+  if (d.sendMethod === 'webhook' && !/^https:\/\/[^\s/]+/i.test(d.sendUrl.trim())) {
+    errors['sendUrl'] = 'The endpoint must be an https:// URL.';
+  }
+  // A key belongs to its provider: a new method needs its own.
+  const keyed = API_SEND_METHODS.includes(d.sendMethod);
+  const stored = d.hasSendSecret && d.storedSendMethod === d.sendMethod;
+  if (keyed && d.sendSecret === '' && !stored) {
+    errors['sendSecret'] =
+      d.sendMethod === 'webhook' ? 'Give the signing secret.' : d.sendMethod === 'postmark' ? 'Give the server API token.' : 'Give the API key.';
+  }
   return errors;
 }
 
@@ -331,16 +435,37 @@ export function channelDraftToSet(d: CommChannelDraft, projectId: string): Recor
     channelType: d.channelType.trim(),
   };
   if (d.id !== '' && d.id !== '0') out['id'] = d.id;
-  if (d.imapHost.trim() !== '') out['imapHost'] = d.imapHost.trim();
-  const ip = parsePort(d.imapPort);
-  if (ip !== 0) out['imapPort'] = ip;
-  if (d.imapUsername.trim() !== '') out['imapUsername'] = d.imapUsername.trim();
-  if (d.imapPassword !== '') out['imapPassword'] = d.imapPassword;
-  if (d.smtpHost.trim() !== '') out['smtpHost'] = d.smtpHost.trim();
-  const sp = parsePort(d.smtpPort);
-  if (sp !== 0) out['smtpPort'] = sp;
-  if (d.smtpUsername.trim() !== '') out['smtpUsername'] = d.smtpUsername.trim();
-  if (d.smtpPassword !== '') out['smtpPassword'] = d.smtpPassword;
+  if (d.imapOn) {
+    if (d.imapHost.trim() !== '') out['imapHost'] = d.imapHost.trim();
+    const ip = parsePort(d.imapPort);
+    if (ip !== 0) out['imapPort'] = ip;
+    if (d.imapUsername.trim() !== '') out['imapUsername'] = d.imapUsername.trim();
+    if (d.imapPassword !== '') out['imapPassword'] = d.imapPassword;
+  } else {
+    out['imapEnabled'] = false;
+  }
+  out['sendMethod'] = d.sendMethod;
+  switch (d.sendMethod) {
+    case 'smtp': {
+      if (d.smtpHost.trim() !== '') out['smtpHost'] = d.smtpHost.trim();
+      const sp = parsePort(d.smtpPort);
+      if (sp !== 0) out['smtpPort'] = sp;
+      if (d.smtpUsername.trim() !== '') out['smtpUsername'] = d.smtpUsername.trim();
+      if (d.smtpPassword !== '') out['smtpPassword'] = d.smtpPassword;
+      break;
+    }
+    case 'mailgun':
+      out['sendDomain'] = d.sendDomain.trim();
+      out['sendRegion'] = d.sendRegion;
+      break;
+    case 'postmark':
+      if (d.sendStream.trim() !== '') out['sendStream'] = d.sendStream.trim();
+      break;
+    case 'webhook':
+      out['sendUrl'] = d.sendUrl.trim();
+      break;
+  }
+  if (API_SEND_METHODS.includes(d.sendMethod) && d.sendSecret !== '') out['sendSecret'] = d.sendSecret;
   // intake_status uses PATCH semantics server-side (0 = leave unchanged), so we
   // only send it when a real status is chosen. There's no "clear back to none".
   if (d.intakeStatusId && d.intakeStatusId !== '0') out['intakeStatusId'] = d.intakeStatusId;

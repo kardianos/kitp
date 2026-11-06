@@ -712,11 +712,10 @@ export const COMM_CHANNELS_SCREEN: MasterDetailConfig = {
     // picker, status, + New, and save + list refresh. No readonly header fields
     // (they'd just duplicate the form), so `fields` is empty.
     fields: [],
+    // The account's POST URLs and SMTP addresses (CommRoutes: their filters,
+    // last message / refusal, View log) are in the form's Receiving section,
+    // beside polling a mailbox (docs/MAIL_INTAKE_AND_CALENDARS.md).
     form: COMM_CHANNEL_FORM,
-    // RECEIVING MAIL: the account's POST URLs and SMTP addresses, with their
-    // filters, last message / refusal and View log links
-    // (docs/MAIL_INTAKE_AND_CALENDARS.md).
-    panel: { type: 'CommRoutes' },
   },
 };
 

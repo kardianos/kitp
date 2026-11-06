@@ -46,7 +46,15 @@ export interface CommRoutesConfig extends BaseControlConfig {
   type: 'CommRoutes';
   /** The MasterDetail scope whose `.selectedId` / `.items` this follows. */
   parentScope: string;
+  /** The panel's heading and intro; defaults as a panel of its own (the
+   *  mail account form, which mounts it in its Receiving section, names
+   *  it there). */
+  heading?: string;
+  intro?: string;
 }
+
+const DEFAULT_INTRO =
+  'Besides IMAP polling (above), mail can reach this account through routes. A POST route is a URL a mail provider sends each message to; an SMTP route is an address for kitp’s own mail listener — forward a mailbox to it. Each route has its own secret, so make one per sender and revoke them one at a time. Copies that arrive more than once are filed once.';
 
 declare module '../core/control.js' {
   interface ControlConfigMap {
@@ -168,16 +176,12 @@ export class CommRoutes extends Control<CommRoutesConfig> {
   /* -------------------------------- painting ------------------------------- */
 
   private paint(): void {
-    const heading = el('h3', 'mi-routes__heading muted', 'RECEIVING MAIL');
+    const heading = el('h3', 'mi-routes__heading muted', this.config.heading ?? 'RECEIVING MAIL');
     if (this.channelId === '') {
       this.el.replaceChildren(heading, el('p', 'muted', 'Save the account to add ways for mail to reach it.'));
       return;
     }
-    const intro = el(
-      'p',
-      'mi-hint',
-      'Besides IMAP polling (above), mail can reach this account through routes. A POST route is a URL a mail provider sends each message to; an SMTP route is an address for kitp’s own mail listener — forward a mailbox to it. Each route has its own secret, so make one per sender and revoke them one at a time. Copies that arrive more than once are filed once.',
-    );
+    const intro = el('p', 'mi-hint', this.config.intro ?? DEFAULT_INTRO);
     intro.dataset.routesIntro = '';
     const steps = this.button('Detailed steps', () => this.ctx.bus?.emit('toggleInstructions', undefined), 'mi-link');
     steps.dataset.routesHelp = '';

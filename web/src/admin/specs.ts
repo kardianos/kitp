@@ -242,6 +242,23 @@ export interface CommChannel {
   channelFaultReason?: string;
   hasImapPassword: boolean;
   hasSmtpPassword: boolean;
+  /** How it sends: 'smtp' | 'mailgun' | 'postmark' | 'webhook' | 'none'
+   *  (an account from before the setting: 'smtp'). */
+  sendMethod?: string;
+  /** Mailgun: the sending domain and the API region ('us' | 'eu'). */
+  sendDomain?: string;
+  sendRegion?: string;
+  /** Postmark: the message stream ('' = outbound). */
+  sendStream?: string;
+  /** Webhook: the endpoint URL. */
+  sendUrl?: string;
+  /** The API key / server token / signing secret is stored (write-only). */
+  hasSendSecret?: boolean;
+  /** It has what its send method needs, and a From address. */
+  canSend?: boolean;
+  /** Its live POST and SMTP intake routes. */
+  postRoutes?: number;
+  smtpRoutes?: number;
   createdAt?: string;
 }
 
@@ -635,6 +652,17 @@ export interface CommChannelSetInput {
   relayReplies?: string;
   /** 'keep' | 'drop'; omit/'' leaves the stored value. */
   emailAttachments?: string;
+  /** false: stop polling — clears the IMAP host, port, username and password. */
+  imapEnabled?: boolean;
+  /** 'smtp' | 'mailgun' | 'postmark' | 'webhook' | 'none'; omit/'' leaves it. */
+  sendMethod?: string;
+  sendDomain?: string;
+  sendRegion?: string;
+  sendStream?: string;
+  sendUrl?: string;
+  /** Write-only — omit to preserve the stored value. Changing sendMethod
+   *  without one clears it (another provider's key is no use). */
+  sendSecret?: string;
 }
 export interface CommChannelSetOutput {
   channelId: string;
@@ -1546,6 +1574,17 @@ export function registerAdminSpecs(api: Api): void {
       action: 'set',
       encode: (i) => encodeWire(i),
       decode: (raw) => decodeWire(raw) as CommChannelSetOutput,
+    });
+  }
+
+  // comm_channel.test_send — mail the caller a short test message through the
+  // account's way out (its send method); the answer names where it went.
+  if (!api.registry.has({ endpoint: 'comm_channel', action: 'test_send' })) {
+    api.define<{ channelId: string }, { to: string }>({
+      endpoint: 'comm_channel',
+      action: 'test_send',
+      encode: (i) => encodeWire(i),
+      decode: (raw) => decodeWire(raw) as { to: string },
     });
   }
 

@@ -115,6 +115,9 @@ function adminTransport() {
           case 'role_mapping.list':
             return { id: sr.id, ok: true, data: { rows: mappingRows } };
           /* ---- writes ---- */
+          case 'comm_channel.test_send':
+            rec(key, data);
+            return { id: sr.id, ok: true, data: { channel_id: data.channel_id, to: 'root@corp.example' } };
           case 'comm_channel.set': {
             rec(key, data);
             const isInsert = data.id === undefined || data.id === null || data.id === '' || data.id === '0';
@@ -460,6 +463,131 @@ test('Comm Channels: typing a password sends ONLY that field', async () => {
 /* -------------------------------------------------------------------------- */
 /* Activity Sinks config editor (write-only secret + filter).                  */
 /* -------------------------------------------------------------------------- */
+
+/* ---- A mail account's ways in and out (docs/MAIL_INTAKE_AND_CALENDARS.md, Sending). ---- */
+
+const SETUP_CASES = [
+  { name: 'complete', row: { imapHost: 'imap.x', postRoutes: 1, sendMethod: 'mailgun', canSend: true }, want: /^Complete: receives from a mailbox \(IMAP\) and 1 POST route; sends with mailgun/ },
+  { name: 'receive only', row: { imapHost: 'imap.x', sendMethod: 'none', canSend: false }, want: /^Receive only: .*can’t go out/ },
+  { name: 'complete through SMTP routes', row: { smtpRoutes: 2, sendMethod: 'smtp', canSend: true }, want: /^Complete: receives from 2 SMTP routes/ },
+  { name: 'send only, nothing in', row: { sendMethod: 'postmark', canSend: true }, want: /^Send only: sends with postmark/ },
+  { name: 'not set up', row: { sendMethod: 'webhook', canSend: false }, want: /^Not set up/ },
+];
+for (const c of SETUP_CASES) {
+  test(`channelSetupText: ${c.name}`, () => {
+    assert.match(M.channelSetupText(c.row), c.want);
+  });
+}
+
+test('channelDraftToSet sends only the chosen method’s settings, and the secret only when typed', () => {
+  const d = { ...M.emptyChannelDraft(), id: '80', name: 'Support', smtpHost: 'smtp.x', smtpPort: '587' };
+  d.sendMethod = 'mailgun';
+  d.sendDomain = ' mg.example.com ';
+  d.sendRegion = 'eu';
+  let out = M.channelDraftToSet(d, PROJECT_ID);
+  assert.equal(out.sendMethod, 'mailgun');
+  assert.equal(out.sendDomain, 'mg.example.com');
+  assert.equal(out.sendRegion, 'eu');
+  assert.equal('smtpHost' in out, false, 'no SMTP settings for Mailgun');
+  assert.equal('sendSecret' in out, false, 'no secret unless typed');
+  out = M.channelDraftToSet({ ...d, sendSecret: 'key-1' }, PROJECT_ID);
+  assert.equal(out.sendSecret, 'key-1');
+  out = M.channelDraftToSet({ ...d, sendMethod: 'webhook', sendUrl: 'https://out.example/' }, PROJECT_ID);
+  assert.equal(out.sendUrl, 'https://out.example/');
+  assert.equal('sendDomain' in out, false);
+  out = M.channelDraftToSet({ ...d, imapOn: false, imapHost: 'imap.x' }, PROJECT_ID);
+  assert.equal(out.imapEnabled, false, 'polling off clears IMAP');
+  assert.equal('imapHost' in out, false);
+});
+
+test('validateChannelDraft: a method’s settings, an https webhook, and a key for a new method', () => {
+  const base = { ...M.emptyChannelDraft(), name: 'Support' };
+  assert.deepEqual(M.validateChannelDraft(base), {}, 'SMTP needs no key');
+  assert.ok(M.validateChannelDraft({ ...base, sendMethod: 'mailgun' }).sendDomain, 'Mailgun needs its domain');
+  assert.ok(M.validateChannelDraft({ ...base, sendMethod: 'mailgun', sendDomain: 'mg.x' }).sendSecret, 'and its key');
+  assert.ok(M.validateChannelDraft({ ...base, sendMethod: 'webhook', sendUrl: 'http://x.example/', sendSecret: 's' }).sendUrl, 'https only');
+  // A stored key counts for the same method only.
+  const stored = { ...base, sendMethod: 'postmark', storedSendMethod: 'postmark', hasSendSecret: true };
+  assert.deepEqual(M.validateChannelDraft(stored), {});
+  assert.ok(M.validateChannelDraft({ ...stored, storedSendMethod: 'mailgun' }).sendSecret, 'another provider’s key is no use');
+});
+
+test('Comm Channels: Sending and Receiving sections; the method picks its fields; polling off; Send a test message', async () => {
+  const transport = adminTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mountView(api, 'comm_channels');
+  await settle(dispatcher);
+  await selectFirstRow(ctrl, dispatcher);
+  const q = (name) => ctrl.el.querySelector(`[data-record-form-field="${name}"]`);
+
+  assert.ok(ctrl.el.querySelector('[data-record-form-heading="sendingHeading"]'), 'a Sending section');
+  assert.ok(ctrl.el.querySelector('[data-record-form-heading="receivingHeading"]'), 'a Receiving section');
+  assert.match(q('setup').textContent, /^Receive only|^Complete|^Send only|^Not set up/, 'the setup summary');
+  assert.ok(q('smtpHost'), 'an account from before the setting sends by SMTP');
+  assert.equal(q('sendDomain'), null);
+
+  // The layout is the field table's: sections hold their fields, the
+  // method's fields are indented under the picker, the ways in sit side by
+  // side, the details are at the foot outside the sections.
+  const section = (name) => ctrl.el.querySelector(`[data-record-form-section="${name}"]`);
+  const wrapOf = (name) => ctrl.el.querySelector(`[data-record-form-field-wrap="${name}"]`);
+  assert.ok(section('sendingHeading').contains(q('sendMethod')), 'Send with is in Sending');
+  assert.ok(wrapOf('sendMethod').classList.contains('record-form__field--prominent'), 'Send with is prominent');
+  const indent = wrapOf('smtpHost').parentNode;
+  assert.ok(indent.classList.contains('record-form__indent'), 'the SMTP fields are indented under the picker');
+  assert.equal(wrapOf('fromAddress').parentNode, section('sendingHeading'), 'the From address is not');
+  assert.match(ctrl.el.querySelector('[data-record-form-hint="sendMethod"]').textContent, /mail server/, 'the picker says what SMTP does');
+  const columns = wrapOf('imapOn').parentNode.parentNode;
+  assert.ok(columns.classList.contains('record-form__columns'), 'polling sits in a column');
+  assert.ok(columns.contains(ctrl.el.querySelector('[data-record-form-control="routes"]')), 'beside the delivery routes');
+  assert.ok(section('receivingHeading').contains(columns));
+  const details = ctrl.el.querySelector('[data-record-form-details="technical"]');
+  assert.ok(details, 'technical details');
+  assert.equal(section('receivingHeading').contains(details), false, 'at the foot, outside the sections');
+  assert.ok(details.querySelectorAll('.record-form__code').length >= 4, 'with POST examples');
+  assert.ok(wrapOf('setup').classList.contains('record-form__field--banner'), 'the setup line is a banner');
+
+  const method = q('sendMethod');
+  method.value = 'mailgun';
+  method.dispatchEvent({ type: 'change' });
+  M.flushSync?.();
+  assert.equal(q('smtpHost'), null, 'SMTP fields hidden for Mailgun');
+  assert.ok(q('sendDomain') && q('sendRegion') && q('sendSecret'), 'Mailgun’s fields shown');
+  assert.match(ctrl.el.querySelector('[data-record-form-hint="sendMethod"]').textContent, /Mailgun/, 'the picker says what Mailgun does');
+  assert.ok(wrapOf('sendDomain').parentNode.classList.contains('record-form__indent'), 'indented too');
+  method.value = 'none';
+  method.dispatchEvent({ type: 'change' });
+  M.flushSync?.();
+  assert.equal(q('fromAddress'), null, 'no From for an account that doesn’t send');
+  method.value = 'smtp';
+  method.dispatchEvent({ type: 'change' });
+  M.flushSync?.();
+
+  const imap = q('imapOn');
+  assert.equal(imap.checked, true, 'it polls a mailbox');
+  imap.checked = false;
+  imap.dispatchEvent({ type: 'change' });
+  M.flushSync?.();
+  assert.equal(q('imapHost'), null, 'IMAP fields hidden when not polling');
+  ctrl.el.querySelector('[data-record-form-save]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  const sets = writesFor(transport, 'comm_channel.set');
+  assert.equal(sets.length, 1);
+  assert.equal(sets[0].data.imap_enabled, false, 'polling off clears IMAP');
+  assert.equal(sets[0].data.send_method, 'smtp');
+
+  await selectFirstRow(ctrl, dispatcher);
+  const action = ctrl.el.querySelector('[data-record-form-action="Send a test message"]');
+  assert.ok(action, 'a Send a test message action');
+  action.dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  await settle(dispatcher);
+  const tests = writesFor(transport, 'comm_channel.test_send');
+  assert.deepEqual(tests.map((w) => w.data.channel_id), ['80']);
+  const notice = ctrl.el.querySelector('[data-record-form-notice]');
+  assert.ok(notice, 'the form says where it went');
+  assert.match(notice.textContent, /root@corp\.example/);
+});
 
 test('Activity Sinks: client_secret omitted when blank; adding a filter condition saves the predicate JSON', async () => {
   const transport = adminTransport();
