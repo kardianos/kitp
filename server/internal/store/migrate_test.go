@@ -378,7 +378,8 @@ func TestForwardMigration0005FlowStepStandalone(t *testing.T) {
 	if err := pool.QueryRow(ctx, `
 		SELECT EXISTS(
 			SELECT 1 FROM information_schema.columns
-			WHERE table_name = 'flow_step' AND column_name = 'standalone')
+			WHERE table_schema = current_schema()
+			  AND table_name = 'flow_step' AND column_name = 'standalone')
 	`).Scan(&hasCol); err != nil {
 		t.Fatalf("check column: %v", err)
 	}
@@ -1914,7 +1915,7 @@ func TestForwardMigration0044SendMethods(t *testing.T) {
 		t.Errorf("after 0044: %v, want the fresh seed's %v", got, fresh)
 	}
 	var col int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_name = 'comm_secret' AND column_name = 'send_secret'`).Scan(&col); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'comm_secret' AND column_name = 'send_secret'`).Scan(&col); err != nil {
 		t.Fatal(err)
 	}
 	if col != 1 {

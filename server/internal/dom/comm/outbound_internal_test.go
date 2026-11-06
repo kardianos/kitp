@@ -45,8 +45,10 @@ func TestOutboundReady(t *testing.T) {
 			t.Errorf("%+v Ready = %v, want %v", c.o, got, c.want)
 		}
 	}
-	if ResolveSendMethod("") != SendMethodSMTP || ResolveSendMethod("bogus") != SendMethodSMTP || ResolveSendMethod("postmark") != SendMethodPostmark {
-		t.Error("ResolveSendMethod: unset or unknown is smtp")
+	// Unset is smtp (accounts from before the setting); a value set can't
+	// take is no way out, as channel_can_send says.
+	if ResolveSendMethod("") != SendMethodSMTP || ResolveSendMethod("bogus") != SendMethodNone || ResolveSendMethod("postmark") != SendMethodPostmark {
+		t.Error("ResolveSendMethod: unset is smtp, unknown is none")
 	}
 }
 
