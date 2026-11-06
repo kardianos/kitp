@@ -169,9 +169,15 @@ func (s *IdempotencyStore) WrapAuthed(next api.AuthedHandler) api.AuthedHandler 
 		// A3). Inspect the envelope and skip caching when any sub-response
 		// carries an error / aborted code.
 		if cap.status == http.StatusOK && cap.buf.Len() > 0 && batchSucceeded(cap.buf.Bytes()) && !batchHasSecret(body) {
-			if err := s.store(ctx, userID, key, hash[:], cap.buf.Bytes()); err != nil {
-				s.logWarn(ctx, "idempotency.store", err)
+			// The batch has committed: keep its answer even if the client
+			// has hung up meanwhile — that client is the one that retries
+			// with this key, and must get the answer, not a second run
+			// (review 2026-11-06 round 8 L15).
+			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			if err := s.store(sctx, userID, key, hash[:], cap.buf.Bytes()); err != nil {
+				s.logWarn(sctx, "idempotency.store", err)
 			}
+			cancel()
 		}
 		return nil
 	}

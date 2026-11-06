@@ -157,7 +157,8 @@ func sweep[K any](
 	if err != nil {
 		return fmt.Errorf("cas reaper: %s consumers: %w", table, err)
 	}
-	keys, err := findOrphans[K](ctx, r, table, col, consumers)
+	cutoff := time.Now().Add(-r.GracePeriod)
+	keys, err := findOrphans[K](ctx, r, table, col, consumers, cutoff)
 	if err != nil {
 		return fmt.Errorf("cas reaper: find %s orphans: %w", table, err)
 	}
@@ -169,7 +170,7 @@ func sweep[K any](
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("cas reaper: %s: %w", table, err)
 		}
-		ok, err := reapOne(ctx, r, table, col, consumers, key, dropBytes)
+		ok, err := reapOne(ctx, r, table, col, consumers, cutoff, key, dropBytes)
 		if err != nil {
 			failed++
 			r.Logger.LogAttrs(ctx, slog.LevelWarn, "cas reaper delete",
@@ -267,9 +268,10 @@ func findOrphans[K any](
 	r *Reaper,
 	table, col string,
 	consumers []ConsumerColumn,
+	cutoff time.Time,
 ) ([]K, error) {
 	b := named.New()
-	b.Set("cutoff", time.Now().Add(-r.GracePeriod))
+	b.Set("cutoff", cutoff)
 	q, args, err := b.Compile(fmt.Sprintf(
 		`SELECT p.%s FROM %s p WHERE p.created_at < :cutoff AND %s ORDER BY 1`,
 		col, table, unused(col, consumers)))
@@ -294,14 +296,17 @@ func findOrphans[K any](
 
 // reapOne deletes one orphan in its own transaction. It locks the row,
 // skipping it (false) when a writer holds it (an insert referencing it
-// is in flight) or a consumer has started using it since the scan, then
-// deletes the consumers' dead references to it, drops its bytes, and
-// deletes the row.
+// is in flight), a consumer has started using it since the scan, or its
+// clock was restarted since (Storage.Put touching bytes it is about to
+// hand out again: a portal build or theme file that hasn't been inserted
+// yet, review 2026-11-06 round 8 L17), then deletes the consumers' dead
+// references to it, drops its bytes, and deletes the row.
 func reapOne[K any](
 	ctx context.Context,
 	r *Reaper,
 	table, col string,
 	consumers []ConsumerColumn,
+	cutoff time.Time,
 	key K,
 	dropBytes func(context.Context, K) error,
 ) (bool, error) {
@@ -322,6 +327,9 @@ func reapOne[K any](
 	exec := func(sql string) (int64, error) {
 		b := named.New()
 		b.Set("key", key)
+		if strings.Contains(sql, ":cutoff") {
+			b.Set("cutoff", cutoff)
+		}
 		q, args, err := b.Compile(sql)
 		if err != nil {
 			return 0, fmt.Errorf("compile: %w", err)
@@ -331,7 +339,7 @@ func reapOne[K any](
 	}
 
 	locked, err := exec(fmt.Sprintf(
-		`SELECT FROM %s p WHERE p.%s = :key AND %s FOR UPDATE SKIP LOCKED`,
+		`SELECT FROM %s p WHERE p.%s = :key AND p.created_at < :cutoff AND %s FOR UPDATE SKIP LOCKED`,
 		table, col, unused(col, consumers)))
 	if err != nil {
 		return false, fmt.Errorf("lock: %w", err)

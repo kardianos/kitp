@@ -162,21 +162,28 @@ func (s *Storage) Put(ctx context.Context, mimeType string, data []byte) (string
 	if err != nil {
 		return "", err
 	}
-	if !exists {
-		if err := head.Put(ctx, address, mimeType, int64(len(data)), data); err != nil {
-			return "", fmt.Errorf("cas: %s: put: %w", head.Kind(), err)
-		}
-		return address, nil
-	}
-	// The bytes are already stored, perhaps unreferenced and close to the
-	// reaper's grace cutoff: restart their clock, so the reaper can't drop
-	// a blob a caller is about to reference (review A25).
-	for _, b := range s.backends {
-		if t, ok := b.(Toucher); ok {
-			if err := t.Touch(ctx, address); err != nil {
-				return "", fmt.Errorf("cas: %s: touch: %w", b.Kind(), err)
+	if exists {
+		// The bytes are already stored, perhaps unreferenced and close to
+		// the reaper's grace cutoff: restart their clock, so the reaper
+		// can't drop a blob a caller is about to reference (review A25).
+		// A blob the reaper took between Has and Touch is stored again
+		// (review 2026-11-06 round 8 L17).
+		touched := true
+		for _, b := range s.backends {
+			if t, ok := b.(Toucher); ok {
+				found, err := t.Touch(ctx, address)
+				if err != nil {
+					return "", fmt.Errorf("cas: %s: touch: %w", b.Kind(), err)
+				}
+				touched = touched && found
 			}
 		}
+		if touched {
+			return address, nil
+		}
+	}
+	if err := head.Put(ctx, address, mimeType, int64(len(data)), data); err != nil {
+		return "", fmt.Errorf("cas: %s: put: %w", head.Kind(), err)
 	}
 	return address, nil
 }
@@ -189,7 +196,8 @@ type CascadesWithBlob interface {
 }
 
 // Toucher is a Backend that can restart a stored blob's age (the reaper's
-// grace period counts from it).
+// grace period counts from it). found is false when the blob isn't there
+// (any more).
 type Toucher interface {
-	Touch(ctx context.Context, address string) error
+	Touch(ctx context.Context, address string) (found bool, err error)
 }

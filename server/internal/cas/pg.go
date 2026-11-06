@@ -151,16 +151,18 @@ func (p *PgBackend) Delete(ctx context.Context, address string) error {
 
 // Touch restarts a blob's age (cas_blob.created_at), which the reaper's
 // grace period counts from: Storage.Put calls it when the bytes it is
-// asked to store are already here.
-func (p *PgBackend) Touch(ctx context.Context, address string) error {
+// asked to store are already here. found is false when the row is gone —
+// the reaper, holding it while Put looked, deleted it.
+func (p *PgBackend) Touch(ctx context.Context, address string) (bool, error) {
 	b := named.New()
 	b.Set("address", address)
 	sql, args, err := b.Compile(`UPDATE cas_blob SET created_at = now() WHERE address = :address`)
 	if err != nil {
-		return fmt.Errorf("cas/pg: touch: compile: %w", err)
+		return false, fmt.Errorf("cas/pg: touch: compile: %w", err)
 	}
-	if _, err := p.pool.Exec(ctx, sql, args...); err != nil {
-		return fmt.Errorf("cas/pg: touch: %w", err)
+	tag, err := p.pool.Exec(ctx, sql, args...)
+	if err != nil {
+		return false, fmt.Errorf("cas/pg: touch: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
