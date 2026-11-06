@@ -478,6 +478,12 @@ type prepared struct {
 	IsLast      bool        // last step of a process; outputs go to the outer slot
 	IsLeader    bool        // first step of a process; used for process logging only
 	ProcessName string      // resolved process name (informational)
+	// UnbornAnchor is the card id a gated leaf aims at that had no card
+	// when the authz pass ran (0: none). The authz pass passes such a leaf
+	// — the handler answers its own not-found — but a card that has the
+	// id by the time the handler runs was made after the check, so the
+	// leaf is refused then (review 2026-11-06 #1; checkUnborn).
+	UnbornAnchor int64
 }
 
 // Dispatch is exposed for tests so they can drive the dispatcher without
@@ -627,6 +633,15 @@ func (s *Server) Dispatch(ctx context.Context, req BatchRequest) BatchResponse {
 		// processing rather than the client just walking away. The
 		// pool-wide `statement_timeout=600s` is a hard upper bound
 		// even when a handler's Timeout is larger.
+		if err := checkUnborn(ctx, tx, group); err != nil {
+			offender := group[0].OuterIdx
+			var he *reg.HandlerError
+			if errors.As(err, &he) && he.InputIndex >= 0 && he.InputIndex < len(group) {
+				offender = group[he.InputIndex].OuterIdx
+			}
+			s.abortWithError(ctx, out.Subresponses, offender, "card_not_found", err)
+			return err
+		}
 		timeout := group[0].Handler.Timeout
 		if timeout <= 0 {
 			timeout = DefaultHandlerTimeout
@@ -967,16 +982,21 @@ func (s *Server) runAuthzPass(ctx context.Context, prepped []prepared, slots []S
 		return err
 	}
 
-	for _, p := range prepped {
-		// A gated leaf aimed at a card that doesn't exist yet is refused:
-		// these checks run before the request transaction, and card ids are
-		// sequential, so an id that is free now can be someone else's new
-		// card by the time the handler writes it — in another project, or
-		// private to another person (review 2026-11-06 #1).
-		if err := s.checkAnchorExists(ctx, p.Handler, p.Input, lookup); err != nil {
-			s.abortWithError(ctx, slots, p.OuterIdx, "card_not_found", err)
+	for i := range prepped {
+		p := prepped[i]
+		// A gated leaf aimed at a card that doesn't exist yet: these checks
+		// run before the request transaction, and card ids are sequential,
+		// so an id free now can be someone else's new card by the time the
+		// handler writes it — in another project, or private to another
+		// person — or one this batch makes. Noted here and checked again
+		// in the transaction, just before the handler runs (checkUnborn;
+		// review 2026-11-06 #1).
+		unborn, err := s.unbornAnchor(ctx, p.Handler, p.Input, lookup)
+		if err != nil {
+			s.abortWithError(ctx, slots, p.OuterIdx, "validation", err)
 			return err
 		}
+		prepped[i].UnbornAnchor = unborn
 		owned, err := s.checkPrivate(ctx, p.Handler, p.Input, lookup, actorPerson)
 		if err != nil {
 			s.abortWithError(ctx, slots, p.OuterIdx, "unauthorized", err)

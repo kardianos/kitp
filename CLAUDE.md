@@ -155,8 +155,10 @@ exists. `reg.Register` panics at startup otherwise. See DI-5 in
 `docs/DESIGN_INVARIANTS.md`.
 
 The authz pass runs before the request transaction: a gated leaf whose
-anchor card doesn't exist yet is refused (`checkAnchorExists`), never
-waved through. Mail accounts and activity sinks are workspace-admin
+anchor card doesn't exist yet is noted (`unbornAnchor`) and checked again
+in the transaction just before its handler runs (`checkUnborn`) — a card
+that exists by then was made after the check and is refused; one still
+missing is the handler's own not-found. Mail accounts and activity sinks are workspace-admin
 only on every generic write (`card_is_admin_only`). A write that names a
 person (a card_ref to `person`, a thread's recipients) checks
 `person_referable(actor, person, project)`: a person card has no project,

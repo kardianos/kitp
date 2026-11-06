@@ -151,6 +151,11 @@ func TestCommAuthorJoin(t *testing.T) {
 
 	t.Run("the sender of a new thread's first message joins it", func(t *testing.T) {
 		f := seedCommCreateFixture(t, pool)
+		// Russ is staff (a workspace role): someone Lucie may name on a
+		// thread (person_referable; review 2026-11-06 #5).
+		if _, err := pool.Exec(ctx, `INSERT INTO user_role (user_id, role_id) SELECT $1, id FROM role WHERE name = 'worker'`, russ.ID); err != nil {
+			t.Fatal(err)
+		}
 		rows := callCommCreateBatch(t, pool, lucie.ID, []map[string]any{
 			{
 				"task_id":              intToStr(f.taskID),

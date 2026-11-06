@@ -133,7 +133,7 @@ func TestThePrimaryIsAVerifiedAddress(t *testing.T) {
 		RETURNING card_id`).Scan(&contact); err != nil {
 		t.Fatal(err)
 	}
-	if r := call(t, f, sys, "person", "grant_account", map[string]any{"person_id": fmt.Sprint(contact), "email": "dana@corp.example"}); !r.OK {
+	if r := call(t, f, sys, "person", "grant_account", map[string]any{"person_card_id": fmt.Sprint(contact), "email": "dana@corp.example"}); !r.OK {
 		t.Fatalf("grant_account: %+v", r.Error)
 	}
 	if p := f.primary(t, contact); p != "dana@corp.example" {

@@ -195,8 +195,11 @@ except as noted below.
   `KITP_LINK_SECRET`, else per process). A sign-in in flight across the
   deploy starts again. `oidc_state` gets no new rows; the reaper empties
   it.
-- **A write aimed at a card that doesn't exist yet is refused**
-  (`card_not_found`) before the batch runs.
+- **A write aimed at a card that didn't exist when it was checked** is
+  refused if the card exists by the time its handler runs (`card_not_found`,
+  "send it again"): made in between by someone else, or by an earlier
+  sub-request of the same batch. One still missing gets the handler's own
+  answer (`task_not_found` for the forge link hook, as before).
 - **Mail accounts and activity sinks are workspace-admin only** through
   every generic write (`attribute.update`, `card.insert` / `delete` /
   `undelete` / `merge`), as their own screens already were.

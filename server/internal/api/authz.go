@@ -17,6 +17,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 
@@ -447,25 +448,21 @@ func (s *Server) checkBundleSource(ctx context.Context, h reg.Handler, input any
 	return nil
 }
 
-// errNoSuchCard is the deny for a gated leaf whose card doesn't exist.
-var errNoSuchCard = &reg.HandlerError{Code: "card_not_found", Message: "card not found"}
-
-// checkAnchorExists refuses a gated leaf (ProcessName + CardTypeID) whose
-// anchor card — card.insert's parent, else the card the scope pass walks
-// from — names no card. The authz pass reads the pool before the request
-// transaction opens; a check that passed an unknown id (no card type, no
-// project, nobody's private card) let a batch write whatever card got that
-// id in between (review 2026-11-06 #1). lookup holds every anchor that
-// exists (runAuthzPass preloads them).
-func (s *Server) checkAnchorExists(ctx context.Context, h reg.Handler, input any, lookup map[int64]cardInfo) error {
+// unbornAnchor is the anchor card id of a gated leaf (ProcessName +
+// CardTypeID) — card.insert's parent, else the card the scope pass walks
+// from — when no card has it yet (lookup holds every anchor that exists:
+// runAuthzPass preloads them); 0 otherwise. The checks before the request
+// transaction pass such a leaf (no card type, no project, nobody's private
+// card), so checkUnborn looks again just before the handler runs.
+func (s *Server) unbornAnchor(ctx context.Context, h reg.Handler, input any, lookup map[int64]cardInfo) (int64, error) {
 	if h.ProcessName == "" || h.CardTypeID == nil {
-		return nil // not gated: the handler checks its own cards
+		return 0, nil // not gated: the handler checks its own cards
 	}
 	var anchor int64
 	if h.Endpoint == "card" && h.Action == "insert" {
 		parent, _, err := cardInsertParent(input)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		if parent != nil {
 			anchor = *parent
@@ -473,15 +470,61 @@ func (s *Server) checkAnchorExists(ctx context.Context, h reg.Handler, input any
 	} else {
 		cid, err := s.scopeCardID(ctx, h, input)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		anchor = cid
 	}
 	if anchor == 0 {
+		return 0, nil
+	}
+	if _, ok := lookup[anchor]; ok {
+		return 0, nil
+	}
+	return anchor, nil
+}
+
+// checkUnborn refuses a group whose leaf aimed at a card that didn't exist
+// when it was authorized but does now, in the request transaction: someone
+// made it in between, or an earlier sub-request of this batch did — either
+// way no grant was checked for it (review 2026-11-06 #1). A card still
+// missing is the handler's to report (task_not_found, link_not_found…).
+// The check runs just before the handler's statement, so the window left is
+// that of one statement, not of a whole batch.
+func checkUnborn(ctx context.Context, tx store.Querier, group []prepared) error {
+	var ids []int64
+	for _, p := range group {
+		if p.UnbornAnchor != 0 {
+			ids = append(ids, p.UnbornAnchor)
+		}
+	}
+	if len(ids) == 0 {
 		return nil
 	}
-	if _, ok := lookup[anchor]; !ok {
-		return errNoSuchCard
+	b := named.New()
+	b.Set("ids", ids)
+	q, args, err := b.Compile(`SELECT id FROM card WHERE id = ANY(:ids::bigint[])`)
+	if err != nil {
+		return fmt.Errorf("authz: unborn anchors: compile: %w", err)
+	}
+	rows, err := tx.Query(ctx, q, args...)
+	if err != nil {
+		return fmt.Errorf("authz: unborn anchors: %w", err)
+	}
+	born, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		return fmt.Errorf("authz: unborn anchors: %w", err)
+	}
+	if len(born) == 0 {
+		return nil
+	}
+	for i, p := range group {
+		if p.UnbornAnchor != 0 && slices.Contains(born, p.UnbornAnchor) {
+			return &reg.HandlerError{
+				Code:       "card_not_found",
+				Message:    "that card didn't exist when this request was checked; send it again",
+				InputIndex: i,
+			}
+		}
 	}
 	return nil
 }

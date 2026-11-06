@@ -43,9 +43,9 @@ func r8Deleted(t *testing.T, sp *store.Pool, id int64) bool {
 
 // TestAWriteAimedAtAFreeCardIDIsRefused (review 2026-11-06 #1): the authz
 // pass runs before the request transaction, and card ids are sequential. A
-// gated write naming an id no card has yet — to land on whatever card gets
-// it in between, or on one its own batch makes — is refused, not waved
-// through as "no card type".
+// gated write naming an id no card had when it was checked — one its own
+// batch makes, or whatever card gets it in between — is refused once the
+// card exists; one still missing gets the handler's own not-found.
 func TestAWriteAimedAtAFreeCardIDIsRefused(t *testing.T) {
 	srv, sp := setupAuthz(t, "kitp_test_r8_free_id")
 	projA, taskA := makeProjectAndTask(t, srv, "A")
@@ -70,7 +70,8 @@ func TestAWriteAimedAtAFreeCardIDIsRefused(t *testing.T) {
 	if r8Deleted(t, sp, taskA) {
 		t.Error("A's task was merged away")
 	}
-	// A free id, written by someone with no grant on whatever lands there.
+	// A free id, written by someone with no grant on whatever lands there:
+	// still missing at the handler, so its own not-found.
 	for _, s := range []api.SubRequest{
 		r8Sub("u", "attribute", "update", fmt.Sprintf(`{"card_id":"%d","attribute_name":"title","value":"defaced"}`, next+50)),
 		r8Sub("d", "card", "delete", fmt.Sprintf(`{"card_id":"%d"}`, next+50)),
