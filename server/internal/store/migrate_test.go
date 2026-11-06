@@ -1922,3 +1922,58 @@ func TestForwardMigration0044SendMethods(t *testing.T) {
 		t.Error("comm_secret.send_secret is missing")
 	}
 }
+
+// TestForwardMigration0045CrossProjectParentTask: a subtask whose
+// parent_task is a task of another project loses the link (and its
+// parent_relationship); one within its project keeps it.
+func TestForwardMigration0045CrossProjectParentTask(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0045")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+	mk := func(typ string, parent any) int64 {
+		t.Helper()
+		var id int64
+		if err := pool.QueryRow(ctx, `INSERT INTO card (card_type_id, parent_card_id) SELECT id, $2 FROM card_type WHERE name = $1 RETURNING id`, typ, parent).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	link := func(child, parent int64) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO attribute_value (card_id, attribute_def_id, value)
+			SELECT $1, ad.id, CASE ad.name WHEN 'parent_task' THEN to_jsonb($2::bigint) ELSE to_jsonb('subtask'::text) END
+			FROM attribute_def ad WHERE ad.name IN ('parent_task', 'parent_relationship')`, child, parent); err != nil {
+			t.Fatal(err)
+		}
+	}
+	links := func(card int64) int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, `
+			SELECT count(*) FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
+			WHERE av.card_id = $1 AND ad.name IN ('parent_task', 'parent_relationship')`, card).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	projA, projB := mk("project", nil), mk("project", nil)
+	parentA, parentB := mk("task", projA), mk("task", projB)
+	inside, across := mk("task", projA), mk("task", projA)
+	link(inside, parentA)
+	link(across, parentB)
+	if _, err := pool.Exec(ctx, `DELETE FROM schema_version WHERE name = '0045_cross_project_parent_task'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	if n := links(across); n != 0 {
+		t.Errorf("a subtask of another project's task keeps %d link rows, want 0", n)
+	}
+	if n := links(inside); n != 2 {
+		t.Errorf("a subtask within its project has %d link rows, want 2", n)
+	}
+}

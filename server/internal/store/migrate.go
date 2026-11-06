@@ -1575,6 +1575,33 @@ JOIN card_type ct ON ct.name = 'comm_channel'
 JOIN attribute_def ad ON ad.name = v.attr
 ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;`,
 	},
+	{
+		// A subtask whose parent_task is in another project: every subtask
+		// task.move moved on its own before it dropped the link (review
+		// 2026-11-06 L5), and delete subtask → move parent → undelete, which
+		// card.undelete now refuses. task.move's cascade followed such links
+		// out of a project the mover had no role in (round 8 #8), and the
+		// link named a task the subtask's people may not see. The link (and
+		// parent_relationship with it) goes, as task.move drops it. No
+		// activity rows: they would reach every Teams channel and digest at
+		// once. Idempotent: a second run finds none.
+		id: "0045_cross_project_parent_task",
+		sql: `
+WITH crossing AS (
+  SELECT av.card_id
+  FROM attribute_value av
+  JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'parent_task'
+  WHERE card_enclosing_project(av.card_id) IS DISTINCT FROM card_enclosing_project(
+          CASE WHEN jsonb_typeof(av.value) = 'number' THEN (av.value)::text::bigint
+               WHEN jsonb_typeof(av.value) = 'string' AND (av.value #>> '{}') ~ '^\d+$'
+                 THEN (av.value #>> '{}')::bigint END)
+    AND jsonb_typeof(av.value) <> 'null'
+)
+DELETE FROM attribute_value av
+USING attribute_def ad
+WHERE ad.id = av.attribute_def_id AND ad.name IN ('parent_task', 'parent_relationship')
+  AND av.card_id IN (SELECT card_id FROM crossing);`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

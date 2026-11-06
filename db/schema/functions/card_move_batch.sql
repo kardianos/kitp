@@ -64,11 +64,25 @@ BEGIN
           INTO _child_type_id, _child_old_parent,
                _child_parent_type_id, _child_allow_self
         FROM card c JOIN card_type ct ON ct.id = c.card_type_id
-        WHERE c.id = _card_id;
+        WHERE c.id = _card_id
+        -- Locked before the checks below: a card.insert or attribute.update
+        -- naming it holds it FOR SHARE, so one that names it while it moves
+        -- either finishes first (and 3b' counts it) or waits and then sees
+        -- it in its new project (review 2026-11-06 round 8 #11).
+        FOR NO KEY UPDATE OF c;
         IF NOT FOUND THEN
             RETURN QUERY SELECT _idx, false, 'card_not_found'::text,
                 format('card.move: card %s not found', _card_id),
                 NULL::jsonb;
+            CONTINUE;
+        END IF;
+        -- A mail account or an activity sink is a workspace admin's (see
+        -- card_is_admin_only): moved into another project, A's mailbox filed
+        -- into B, B's threads sent as A's address, and a Teams sink posted
+        -- B's activity to A's channel (review 2026-11-06 round 8 L1).
+        IF card_is_admin_only(_card_id) AND NOT user_is_global_admin(card_move_batch.actor_id) THEN
+            RETURN QUERY SELECT _idx, false, 'forbidden'::text,
+                'card.move: only a workspace admin changes a mail account or an activity sink'::text, NULL::jsonb;
             CONTINUE;
         END IF;
 

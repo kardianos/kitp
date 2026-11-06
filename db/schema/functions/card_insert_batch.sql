@@ -157,11 +157,17 @@ BEGIN
             CONTINUE;
         END IF;
 
-        -- 2. Title required.
+        -- 2. Title required, and at most 500 characters (see
+        --    attribute.update; review 2026-11-06 round 8 #7).
         IF _title IS NULL OR _title = '' THEN
             RETURN QUERY SELECT _idx, false, 'missing_required'::text,
                 'card.insert: title is required (built-in edge)'::text,
                 NULL::jsonb;
+            CONTINUE;
+        END IF;
+        IF char_length(_title) > 500 THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'card.insert: a title can be at most 500 characters'::text, NULL::jsonb;
             CONTINUE;
         END IF;
 
@@ -174,8 +180,11 @@ BEGIN
                 CONTINUE;
             END IF;
         ELSE
+            -- FOR SHARE until commit: a move of the parent waits for this
+            -- insert, or this waits for the move and checks against where
+            -- the parent is now (review 2026-11-06 round 8 #11).
             SELECT card_type_id INTO _parent_type_id
-            FROM card WHERE id = _parent_card_id;
+            FROM card WHERE id = _parent_card_id FOR SHARE;
             IF NOT FOUND THEN
                 RETURN QUERY SELECT _idx, false, 'parent_not_found'::text,
                     format('card.insert: parent_card_id %s not found', _parent_card_id),
@@ -428,7 +437,11 @@ BEGIN
                     IF _v = 0 THEN
                         CONTINUE;
                     END IF;
-                    SELECT card_type_id INTO _vct FROM card WHERE id = _v;
+                    -- FOR SHARE, as the parent: a subtask added while its
+                    -- parent task moves waits and is then refused, instead
+                    -- of staying behind with a parent in the destination
+                    -- (round 8 #11).
+                    SELECT card_type_id INTO _vct FROM card WHERE id = _v FOR SHARE;
                     IF NOT FOUND THEN
                         _rej_code := 'cross_project_ref';
                         _rej_msg := format('attribute %L: value card %s can''t be used here', _attr_name, _v);

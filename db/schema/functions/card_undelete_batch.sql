@@ -12,6 +12,11 @@
 --      specific input rather than the whole batch).
 --   3b. A personal card (screen, watch list, view, calendar) comes back
 --       only within its owner's cap (personal_cap_full) → 'limit'.
+--   3c. A card in a project comes back with values of that project only:
+--       one it points at may have moved while it was deleted. A
+--       subtask's parent_task (and parent_relationship) in another
+--       project goes, as task.move drops it; any other such value →
+--       'cross_project_ref'.
 --   4. UPDATE card SET deleted_at = NULL.
 --   5. Activity row of kind='card_undelete'.
 --
@@ -35,6 +40,9 @@ DECLARE
     _deleted_at timestamptz;
     _found boolean;
     _activity_id bigint;
+    _proj bigint;
+    _ref_attr text;
+    _ref_vid bigint;
 BEGIN
     FOR _idx, _card_id IN
         SELECT (r.ord - 1)::int,
@@ -86,6 +94,58 @@ BEGIN
                 'card.undelete: its owner already has as many of these as they may; delete one first'::text,
                 NULL::jsonb;
             CONTINUE;
+        END IF;
+
+        -- 3c. Values of its own project only (see header). While it was
+        --     deleted the cards it names were free to move — a parent task
+        --     by task.move, a milestone by card.move, which counts only live
+        --     cards as using it — and brought back it would join another
+        --     project's task to this one, which task.move's cascade then
+        --     followed (review 2026-11-06 round 8 #8). A card with no
+        --     project is checked by no write either, and isn't here.
+        _proj := card_enclosing_project(_card_id);
+        IF _proj IS NOT NULL THEN
+            _ref_attr := NULL;
+            SELECT ad.name, x.vid INTO _ref_attr, _ref_vid
+            FROM attribute_value av
+            JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                 AND ad.value_type IN ('card_ref', 'card_ref[]') AND ad.name <> 'parent_task'
+            CROSS JOIN LATERAL (
+                SELECT CASE WHEN jsonb_typeof(el.v) = 'number' THEN (el.v)::text::bigint
+                            WHEN jsonb_typeof(el.v) = 'string' AND (el.v #>> '{}') ~ '^\d+$'
+                                THEN (el.v #>> '{}')::bigint END AS vid
+                FROM jsonb_array_elements(CASE WHEN jsonb_typeof(av.value) = 'array' THEN av.value
+                                               ELSE jsonb_build_array(av.value) END) AS el(v)
+            ) x
+            WHERE av.card_id = _card_id AND x.vid IS NOT NULL AND x.vid <> 0
+              AND card_enclosing_project(x.vid) IS NOT NULL
+              AND card_enclosing_project(x.vid) <> _proj
+            ORDER BY ad.name, x.vid
+            LIMIT 1;
+            IF _ref_attr IS NOT NULL THEN
+                RETURN QUERY SELECT _idx, false, 'cross_project_ref'::text,
+                    format('card.undelete: attribute %L value card %s can''t be used here; change it first', _ref_attr, _ref_vid),
+                    NULL::jsonb;
+                CONTINUE;
+            END IF;
+            WITH gone AS (
+                DELETE FROM attribute_value av
+                USING attribute_def ad
+                WHERE ad.id = av.attribute_def_id AND ad.name IN ('parent_task', 'parent_relationship')
+                  AND av.card_id = _card_id
+                  AND EXISTS (
+                      SELECT 1 FROM attribute_value pv
+                      JOIN attribute_def pd ON pd.id = pv.attribute_def_id AND pd.name = 'parent_task'
+                      WHERE pv.card_id = _card_id
+                        AND card_enclosing_project(
+                                CASE WHEN jsonb_typeof(pv.value) = 'number' THEN (pv.value)::text::bigint END)
+                            IS DISTINCT FROM _proj)
+                RETURNING av.card_id, av.attribute_def_id, av.value
+            )
+            INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
+            SELECT g.card_id, 'attr_update', g.attribute_def_id, g.value, 'null'::jsonb, card_undelete_batch.actor_id
+            FROM gone g
+            ORDER BY g.attribute_def_id;
         END IF;
 
         -- 4. Clear the soft-delete flag.

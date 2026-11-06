@@ -248,6 +248,10 @@ BEGIN
         WHERE c.parent_card_id = _project_id AND c.deleted_at IS NULL
           AND (av.value #>> '{}') <> '';
 
+        -- Only people the importer may name in the project (person_referable):
+        -- matched against everyone, a file told which addresses are someone's
+        -- in the workspace, and the insert's refusal which person id has one
+        -- (review 2026-11-06 round 8). Anyone else's address reads as unknown.
         SELECT COALESCE(jsonb_object_agg(lower(btrim(av.value #>> '{}')), c.id::text), '{}'::jsonb)
           INTO _persons
         FROM card c
@@ -255,7 +259,8 @@ BEGIN
         JOIN attribute_value av ON av.card_id = c.id
         JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'email'
         WHERE c.deleted_at IS NULL
-          AND (av.value #>> '{}') <> '';
+          AND (av.value #>> '{}') <> ''
+          AND person_referable(project_import_commit_batch.actor_id, c.id, _project_id);
 
         -- Column index map.
         _col_idx_title := -1;
@@ -329,6 +334,10 @@ BEGIN
             IF _tp_title = '' THEN
                 _had_errors := true;
                 _first_err_msg := COALESCE(_first_err_msg, format('row %s: title is required', _row_num));
+            ELSIF char_length(_tp_title) > 500 THEN
+                -- card.insert's cap (review 2026-11-06 round 8 #7).
+                _had_errors := true;
+                _first_err_msg := COALESCE(_first_err_msg, format('row %s: title can be at most 500 characters', _row_num));
             END IF;
 
             -- milestone

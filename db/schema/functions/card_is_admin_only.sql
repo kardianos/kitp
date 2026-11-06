@@ -1,6 +1,6 @@
 -- card_is_admin_only — true for a card only a workspace admin writes through
 -- the generic handlers (attribute.update, card.insert / .delete / .undelete /
--- .merge): a mail account (comm_channel) or an activity sink. Their own
+-- .merge / .move): a mail account (comm_channel) or an activity sink. Their own
 -- handlers (comm_channel.set, activity_sink.set) are workspace-admin only, and
 -- their server, port, username and From decide where kitp logs in with the
 -- stored password, so a project-scoped admin's card.update grant must not

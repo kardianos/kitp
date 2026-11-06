@@ -141,6 +141,16 @@ BEGIN
                 'attribute.update: a page''s text can be at most 512 KB'::text, NULL::jsonb;
             CONTINUE;
         END IF;
+        -- A title is at most 500 characters, on every card type: a portal's
+        -- navigation carries every page's title on every page, so one 3 MB
+        -- title made each build hundreds of MB (review 2026-11-06 round 8
+        -- #7), and lists, digests and exports print them whole.
+        IF _attr_name = 'title' AND jsonb_typeof(_value) = 'string'
+           AND char_length(_value #>> '{}') > 500 THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'attribute.update: a title can be at most 500 characters'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
         -- A mail account or an activity sink is a workspace admin's
         -- (comm_channel.set and activity_sink.set say so): its server, port,
         -- username and From decide where kitp logs in with the stored
@@ -184,8 +194,14 @@ BEGIN
             CONTINUE;
         END IF;
 
-        -- 1b. Card existence.
-        SELECT card_type_id INTO _card_type_id FROM card WHERE id = _card_id;
+        -- 1b. Card existence. The row is held FOR SHARE until commit: a
+        --     task.move or card.move of it (an UPDATE of the row) waits for
+        --     this write, or this waits for the move and then reads where
+        --     the card is now — its project, its flow, its value. Without it
+        --     a status set during a move landed in the destination with the
+        --     source project's status, which no flow step leaves (review
+        --     2026-11-06 round 8 #11). Shares don't wait on each other.
+        SELECT card_type_id INTO _card_type_id FROM card WHERE id = _card_id FOR SHARE;
         IF NOT FOUND THEN
             RETURN QUERY SELECT _idx, false, 'card_not_found'::text,
                 format('attribute.update: card %s not found', _card_id), NULL::jsonb;
@@ -337,8 +353,12 @@ BEGIN
                     IF _v = 0 THEN
                         CONTINUE;
                     END IF;
+                    -- FOR SHARE: a move of the value card (task.move of a
+                    -- parent task, card.move of a milestone) waits for this
+                    -- write, or this waits for it and sees the card's new
+                    -- project (round 8 #11).
                     SELECT TRUE, card_type_id INTO _vexists, _vct
-                    FROM card WHERE id = _v;
+                    FROM card WHERE id = _v FOR SHARE;
                     IF NOT FOUND THEN
                         _rej_code := 'cross_project_ref';
                         _rej_msg := format('attribute %L: value card %s can''t be used here', _attr_name, _v);
@@ -448,6 +468,13 @@ BEGIN
                 -- hotkey: a whitespace-only value is treated as "clear",
                 -- which skips the uniqueness check entirely.
                 IF NOT (_attr_name = 'hotkey' AND btrim(_candidate) = '') THEN
+                    -- Check-then-write: two writers of one value in one
+                    -- project each saw it free and both wrote it. One at a
+                    -- time per (project, attribute, value) until commit
+                    -- (review 2026-11-06 round 8 L19); a unique index could
+                    -- fail on the duplicates an install already has.
+                    PERFORM pg_advisory_xact_lock(hashtextextended(
+                        'kitp.screen_' || _attr_name || ':' || _parent_card_id || ':' || _candidate, 0));
                     SELECT COALESCE(
                         (SELECT av_t.value #>> '{}'
                          FROM attribute_value av_t

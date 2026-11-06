@@ -221,6 +221,10 @@ BEGIN
         WHERE c.parent_card_id = _project_id AND c.deleted_at IS NULL
           AND (av.value #>> '{}') <> '';
 
+        -- Only people the importer may name in the project (person_referable):
+        -- matched against everyone, a file told which addresses are someone's
+        -- in the workspace, and the insert's refusal which person id has one
+        -- (review 2026-11-06 round 8). Anyone else's address reads as unknown.
         SELECT COALESCE(jsonb_object_agg(lower(btrim(av.value #>> '{}')), c.id::text), '{}'::jsonb)
           INTO _persons
         FROM card c
@@ -228,7 +232,8 @@ BEGIN
         JOIN attribute_value av ON av.card_id = c.id
         JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'email'
         WHERE c.deleted_at IS NULL
-          AND (av.value #>> '{}') <> '';
+          AND (av.value #>> '{}') <> ''
+          AND person_referable(project_import_preview_batch.actor_id, c.id, _project_id);
 
         -- Build colIdxByAttr from header + mapping, flag unknown targets.
         _col_idx_title := -1;
@@ -301,6 +306,11 @@ BEGIN
                     _row_errors := _row_errors || jsonb_build_array(
                         jsonb_build_object('row', _row_num, 'column', 'title',
                             'message', 'title is required'));
+                ELSIF char_length(btrim(_cell)) > 500 THEN
+                    -- card.insert's cap (review 2026-11-06 round 8 #7).
+                    _row_errors := _row_errors || jsonb_build_array(
+                        jsonb_build_object('row', _row_num, 'column', 'title',
+                            'message', 'title can be at most 500 characters'));
                 END IF;
             END IF;
 

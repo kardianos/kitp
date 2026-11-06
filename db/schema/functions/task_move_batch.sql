@@ -24,15 +24,16 @@
 --      when it has one ('bad_status'); a status no flow_step leaves would
 --      strand the moved tasks.
 --   6. Cascade subtree: in cascade mode, walk `parent_task`
---      attribute recursively; in break mode the moved set is the
---      task alone, and direct children get their parent_task
---      cleared after the move.
+--      attribute recursively, within the task's own project; in break
+--      mode the moved set is the task alone, and its direct children in
+--      that project get their parent_task cleared after the move.
 --   7. For every moved card: UPDATE parent_card_id, DELETE the four
 --      per-project attribute_value rows (status / milestone_ref /
 --      component_ref / tags), INSERT the chosen new values, INSERT
 --      audit activity 'task_move'.
 --   8. In break mode, DELETE parent_task / parent_relationship on
---      every direct child of the root task that DIDN'T ride along.
+--      every direct child of the root task, in the project it left, that
+--      DIDN'T ride along.
 --
 -- Result JSON shape matches `card.TaskMoveOutput`:
 --   {
@@ -86,6 +87,10 @@ DECLARE
     _value_parent bigint;
     _value_card_exists boolean;
     _dest_states bigint[];
+    _pass int;
+    _comm_status_def_id bigint;
+    _comm_flow bigint;
+    _comm_default bigint;
 BEGIN
     -- Hoist common attribute_def ids (they're shared across every input).
     SELECT id INTO _status_def_id FROM attribute_def WHERE name = 'status';
@@ -94,6 +99,7 @@ BEGIN
     SELECT id INTO _tags_def_id FROM attribute_def WHERE name = 'tags';
     SELECT id INTO _parent_task_def_id FROM attribute_def WHERE name = 'parent_task';
     SELECT id INTO _parent_relationship_def_id FROM attribute_def WHERE name = 'parent_relationship';
+    SELECT id INTO _comm_status_def_id FROM attribute_def WHERE name = 'comm_status';
 
     FOR _idx, _raw IN
         SELECT (r.ord - 1)::int, r.value
@@ -155,11 +161,16 @@ BEGIN
             CONTINUE;
         END IF;
 
-        -- 2. Moved card must exist + be a task.
+        -- 2. Moved card must exist + be a task. Its row is locked for the
+        --    move: an attribute.update of it (which locks it too) waits and
+        --    then reads where it is now, and a subtask card.insert names it
+        --    under FOR SHARE, so it can't be added to the old project while
+        --    the move runs (review 2026-11-06 round 8 #11).
         SELECT c.card_type_id, COALESCE(c.parent_card_id, 0)
           INTO _moved_type_id, _current_project_id
         FROM card c
-        WHERE c.id = _card_id AND c.deleted_at IS NULL;
+        WHERE c.id = _card_id AND c.deleted_at IS NULL
+        FOR NO KEY UPDATE;
         IF NOT FOUND THEN
             RETURN QUERY SELECT _idx, false, 'card_not_found'::text,
                 format('task.move: card %s not found', _card_id),
@@ -181,19 +192,14 @@ BEGIN
                 NULL::jsonb;
             CONTINUE;
         END IF;
+        -- A missing card and another type's get one answer: a refusal
+        -- mustn't say what a card is (review 2026-11-06 round 8 L12).
         SELECT ct.name INTO _dest_type_name
         FROM card c JOIN card_type ct ON ct.id = c.card_type_id
         WHERE c.id = _new_project_id AND c.deleted_at IS NULL;
-        IF NOT FOUND THEN
+        IF NOT FOUND OR _dest_type_name <> 'project' THEN
             RETURN QUERY SELECT _idx, false, 'project_not_found'::text,
-                format('task.move: new_project_id %s not found', _new_project_id),
-                NULL::jsonb;
-            CONTINUE;
-        END IF;
-        IF _dest_type_name <> 'project' THEN
-            RETURN QUERY SELECT _idx, false, 'wrong_destination_type'::text,
-                format('task.move: new_project_id %s is %L, not project',
-                    _new_project_id, _dest_type_name),
+                format('task.move: project %s not found', _new_project_id),
                 NULL::jsonb;
             CONTINUE;
         END IF;
@@ -383,30 +389,58 @@ BEGIN
         --    parent_card_id). UNION already dedups, but a parent_task
         --    cycle would still loop forever without a cap — carry
         --    depth < 16 to match the CLAUDE.md card-tree cap (A1).
+        --    Only tasks of the root's own project ride along: the
+        --    dispatcher authorized the move there, and a subtask left in
+        --    another project by an older move must not be pulled out of it
+        --    by someone with no role there (review 2026-11-06 round 8 #8).
+        --    The set is locked, then walked again until nothing new turns
+        --    up: a subtask inserted under one of them while the walk ran
+        --    (card.insert holds its parent_task FOR SHARE) either committed
+        --    before the lock, and the next walk finds it, or waits for this
+        --    move and then sees its parent in the destination (#11).
         _moved_ids := ARRAY[_card_id];
         IF _strategy = 'cascade' THEN
-            WITH RECURSIVE descendants AS (
-                SELECT c.id, 0 AS depth
-                FROM card c
-                JOIN attribute_value av ON av.card_id = c.id
-                JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'parent_task'
-                WHERE c.deleted_at IS NULL
-                  AND jsonb_typeof(av.value) = 'number'
-                  AND (av.value)::text::bigint = _card_id
-                UNION
-                SELECT c.id, d.depth + 1
-                FROM card c
-                JOIN attribute_value av ON av.card_id = c.id
-                JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'parent_task'
-                JOIN descendants d
-                  ON jsonb_typeof(av.value) = 'number'
-                 AND (av.value)::text::bigint = d.id
-                WHERE c.deleted_at IS NULL
-                  AND d.depth < 16
-            )
-            SELECT COALESCE(array_agg(DISTINCT id ORDER BY id), ARRAY[]::bigint[])
-              INTO _desc FROM descendants;
-            _moved_ids := _moved_ids || _desc;
+            FOR _pass IN 1..16 LOOP
+                WITH RECURSIVE descendants AS (
+                    SELECT c.id, 0 AS depth
+                    FROM card c
+                    JOIN attribute_value av ON av.card_id = c.id
+                    JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'parent_task'
+                    WHERE c.deleted_at IS NULL
+                      AND c.parent_card_id = _current_project_id
+                      AND jsonb_typeof(av.value) = 'number'
+                      AND (av.value)::text::bigint = _card_id
+                    UNION
+                    SELECT c.id, d.depth + 1
+                    FROM card c
+                    JOIN attribute_value av ON av.card_id = c.id
+                    JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'parent_task'
+                    JOIN descendants d
+                      ON jsonb_typeof(av.value) = 'number'
+                     AND (av.value)::text::bigint = d.id
+                    WHERE c.deleted_at IS NULL
+                      AND c.parent_card_id = _current_project_id
+                      AND d.depth < 16
+                )
+                SELECT COALESCE(array_agg(DISTINCT id ORDER BY id), ARRAY[]::bigint[])
+                  INTO _desc FROM descendants WHERE id <> _card_id;
+                EXIT WHEN _desc <@ _moved_ids;
+                PERFORM 1 FROM card c
+                WHERE c.id = ANY(_desc) AND NOT c.id = ANY(_moved_ids)
+                ORDER BY c.id
+                FOR NO KEY UPDATE;
+                SELECT array_agg(DISTINCT x ORDER BY x) INTO _moved_ids
+                FROM unnest(_moved_ids || _desc) AS x;
+                -- Root first: the result and the activity rows name it so.
+                _moved_ids := ARRAY[_card_id] || array_remove(_moved_ids, _card_id);
+            END LOOP;
+            -- A locked subtask that moved or was deleted meanwhile (the
+            -- walk above ran before its lock) is dropped.
+            SELECT ARRAY[_card_id] || COALESCE(array_agg(c.id ORDER BY c.id), ARRAY[]::bigint[])
+              INTO _moved_ids
+            FROM card c
+            WHERE c.id = ANY(_moved_ids) AND c.id <> _card_id
+              AND c.deleted_at IS NULL AND c.parent_card_id = _current_project_id;
         END IF;
 
         -- 7. Apply.
@@ -444,16 +478,24 @@ BEGIN
         --     another project, goes (with parent_relationship): it named a
         --     task the destination's people may not see, and the export of
         --     the destination printed it (review 2026-11-06 L5). Its
-        --     descendants' links are within the moved set.
-        DELETE FROM attribute_value
-        WHERE card_id = _card_id
-          AND attribute_def_id = ANY(ARRAY[_parent_task_def_id, _parent_relationship_def_id])
-          AND EXISTS (
-              SELECT 1 FROM attribute_value pv
-              WHERE pv.card_id = _card_id AND pv.attribute_def_id = _parent_task_def_id
-                AND card_enclosing_project(
-                        CASE WHEN jsonb_typeof(pv.value) = 'number' THEN (pv.value)::text::bigint END)
-                    IS DISTINCT FROM _new_project_id);
+        --     descendants' links are within the moved set. The card's
+        --     history says so (round 8).
+        WITH gone AS (
+            DELETE FROM attribute_value
+            WHERE card_id = _card_id
+              AND attribute_def_id = ANY(ARRAY[_parent_task_def_id, _parent_relationship_def_id])
+              AND EXISTS (
+                  SELECT 1 FROM attribute_value pv
+                  WHERE pv.card_id = _card_id AND pv.attribute_def_id = _parent_task_def_id
+                    AND card_enclosing_project(
+                            CASE WHEN jsonb_typeof(pv.value) = 'number' THEN (pv.value)::text::bigint END)
+                        IS DISTINCT FROM _new_project_id)
+            RETURNING card_id, attribute_def_id, value
+        )
+        INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
+        SELECT g.card_id, 'attr_update', g.attribute_def_id, g.value, 'null'::jsonb, task_move_batch.actor_id
+        FROM gone g
+        ORDER BY g.attribute_def_id;
 
         -- 7b. The moved tasks' threads send from a mail account of the
         --     project they are in now (project_mail_account: an enabled one
@@ -492,8 +534,45 @@ BEGIN
             ON CONFLICT (card_id, attribute_def_id) DO UPDATE SET value = EXCLUDED.value;
         END IF;
 
+        -- 7c. Their threads' comm_status is a state of the source project's
+        --     comm flow; in the destination no step leaves it, so nobody
+        --     could move the thread on (as #11 left a task's status). Each
+        --     takes the destination flow's state of the same phase (lowest
+        --     sort order), else its starting state; a destination without a
+        --     comm flow leaves it (review 2026-11-06 round 8).
+        SELECT f.id, f.default_create_status_id INTO _comm_flow, _comm_default
+        FROM flow f
+        WHERE f.attribute_def_id = _comm_status_def_id AND f.scope_card_id = _new_project_id;
+        IF FOUND THEN
+            UPDATE attribute_value av
+               SET value = to_jsonb(m.new_status)
+            FROM (
+                SELECT cv.card_id,
+                       COALESCE((
+                           SELECT s.id FROM card s
+                           LEFT JOIN attribute_value so ON so.card_id = s.id
+                                AND so.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'sort_order')
+                           WHERE s.id = ANY(flow_state_ids(_comm_flow)) AND s.deleted_at IS NULL
+                             AND s.phase = old.phase
+                           ORDER BY CASE WHEN jsonb_typeof(so.value) = 'number' THEN (so.value)::text::numeric END NULLS LAST, s.id
+                           LIMIT 1), _comm_default) AS new_status
+                FROM card cm
+                JOIN attribute_value cv ON cv.card_id = cm.id AND cv.attribute_def_id = _comm_status_def_id
+                LEFT JOIN card old ON old.id = CASE WHEN jsonb_typeof(cv.value) = 'number' THEN (cv.value)::text::bigint END
+                WHERE cm.parent_card_id = ANY(_moved_ids)
+                  AND cm.card_type_id = (SELECT id FROM card_type WHERE name = 'comm')
+                  AND NOT (CASE WHEN jsonb_typeof(cv.value) = 'number' THEN (cv.value)::text::bigint END
+                           = ANY(flow_state_ids(_comm_flow)))
+            ) m
+            WHERE av.card_id = m.card_id AND av.attribute_def_id = _comm_status_def_id
+              AND m.new_status IS NOT NULL;
+        END IF;
+
         -- 8. Break mode: clear parent_task on direct children that
-        --    didn't ride along.
+        --    didn't ride along — those in the project the task left. A
+        --    child in another project is a card the dispatcher didn't
+        --    authorize; it isn't written (review 2026-11-06 round 8 #8).
+        --    Each child's history says its link went.
         _broken_ids := ARRAY[]::bigint[];
         IF _strategy = 'break' THEN
             WITH targets AS (
@@ -501,6 +580,7 @@ BEGIN
                 FROM attribute_value av
                 JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'parent_task'
                 JOIN card c ON c.id = av.card_id AND c.deleted_at IS NULL
+                     AND c.parent_card_id = _current_project_id
                 WHERE jsonb_typeof(av.value) = 'number'
                   AND (av.value)::text::bigint = _card_id
             ),
@@ -509,7 +589,13 @@ BEGIN
                 WHERE card_id = ANY(SELECT card_id FROM targets)
                   AND attribute_def_id = ANY(ARRAY[
                       _parent_task_def_id, _parent_relationship_def_id])
-                RETURNING card_id
+                RETURNING card_id, attribute_def_id, value
+            ),
+            logged AS (
+                INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
+                SELECT d.card_id, 'attr_update', d.attribute_def_id, d.value, 'null'::jsonb, task_move_batch.actor_id
+                FROM del d
+                ORDER BY d.card_id, d.attribute_def_id
             )
             SELECT COALESCE(array_agg(DISTINCT card_id ORDER BY card_id), ARRAY[]::bigint[])
               INTO _broken_ids FROM del;
