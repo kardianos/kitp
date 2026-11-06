@@ -84,3 +84,15 @@ func TestTheLocalUseNAT64PrefixIsRefused(t *testing.T) {
 		t.Error("NAT64 of a public address (8.8.8.8) is refused")
 	}
 }
+
+// TestAFiledSubjectFitsATitle (#7): filing cuts a long subject to the
+// title limit card.insert and attribute.update keep.
+func TestAFiledSubjectFitsATitle(t *testing.T) {
+	long := strings.Repeat("é", 700)
+	if got := []rune(filedTitle(long)); len(got) != maxTitleChars || got[len(got)-1] != '…' {
+		t.Errorf("a 700-character subject became %d characters", len(got))
+	}
+	if filedTitle("") != "(no subject)" || filedTitle("Printer") != "Printer" {
+		t.Error("short subjects changed")
+	}
+}

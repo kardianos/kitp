@@ -1913,10 +1913,7 @@ func (p *filer) createTaskAndComm(ctx context.Context, tx store.Querier, snap *s
 	}
 	jstr := func(s string) json.RawMessage { b, _ := json.Marshal(s); return b }
 	jid := func(n int64) json.RawMessage { b, _ := json.Marshal(n); return b }
-	subject := m.Subject
-	if subject == "" {
-		subject = "(no subject)"
-	}
+	subject := filedTitle(m.Subject)
 	taskAttrs := []struct {
 		name string
 		val  json.RawMessage
@@ -1989,10 +1986,7 @@ func (p *filer) createComm(ctx context.Context, tx store.Querier, snap *schema.S
 	if err != nil {
 		return 0, err
 	}
-	subject := m.Subject
-	if subject == "" {
-		subject = "(no subject)"
-	}
+	subject := filedTitle(m.Subject)
 	jstr := func(s string) json.RawMessage { b, _ := json.Marshal(s); return b }
 	jid := func(n int64) json.RawMessage { b, _ := json.Marshal(n); return b }
 
@@ -2919,6 +2913,23 @@ func namedExec(ctx context.Context, q store.Querier, sql string, vals map[string
 	}
 	_, err = q.Exec(ctx, compiled, args...)
 	return err
+}
+
+// maxTitleChars is a card title's limit (card.insert, attribute.update).
+const maxTitleChars = 500
+
+// filedTitle is the title a filed message gives its task or thread: its
+// subject, "(no subject)" without one, cut to maxTitleChars characters —
+// filing writes the title itself, and the limit holds for every card
+// (review 2026-11-06 round 8 #7).
+func filedTitle(subject string) string {
+	if subject == "" {
+		return "(no subject)"
+	}
+	if r := []rune(subject); len(r) > maxTitleChars {
+		return string(r[:maxTitleChars-1]) + "…"
+	}
+	return subject
 }
 
 func namedRow(ctx context.Context, q store.Querier, sql string, vals map[string]any) (pgx.Row, error) {
