@@ -55,6 +55,13 @@ BEGIN
            AND NOT EXISTS (SELECT 1 FROM user_account_person uap WHERE uap.user_account_id = _user_id) THEN
             INSERT INTO user_account_person (user_account_id, person_card_id) VALUES (_user_id, _person);
             _linked := _person;
+            -- The login's email is the primary again, as person.grant_account
+            -- makes it: one typed on the card while the login was revoked
+            -- would get the user's mail until their next sign-in (review
+            -- 2026-11-06 round 8 L4).
+            PERFORM person_email_take_primary(_person,
+                (SELECT ua.email FROM user_account ua WHERE ua.id = _user_id),
+                user_restore_login_batch.actor_id);
         END IF;
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object('restored', true,

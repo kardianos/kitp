@@ -1813,8 +1813,10 @@ func (p *filer) syncCommRecipientsFromInbound(
 		return nil
 	}
 	ids := make([]int64, 0, len(found))
+	sender := senderOf(m.From)
 	for _, a := range found {
-		id, _, uerr := upsertPersonByEmail(ctx, tx, snap, a.email, a.name, PersonKindContact, actorID)
+		id, _, uerr := upsertPersonByEmail(ctx, tx, snap, a.email, a.name, PersonKindContact,
+			sender != "" && strings.EqualFold(a.email, sender), actorID)
 		if uerr != nil {
 			return fmt.Errorf("upsert %s: %w", a.email, uerr)
 		}

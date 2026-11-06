@@ -9,6 +9,14 @@
 -- minute and 5 a day, whoever asks — review 2026-11-06 #7). Adding a
 -- pending address again sends a new code (24 hours).
 --
+-- The limits hold under concurrency and failure (round 8 #5): the person
+-- and the address are locked (advisory, to the end of the transaction)
+-- before they are counted, so a second request waits for the first; and a
+-- send is recorded in person_email_code_sent by the handler's PostRun on
+-- its own connection just before the mail goes out, so a batch that fails
+-- after sending — and rolls back — still counts it. Within one batch the
+-- earlier sub-requests are counted here (_batch_*).
+--
 -- An address verified on someone else is answered like any other — the
 -- address is pending on the caller's list — but no code goes out (`send`
 -- false; the handler's output hides it): add must not tell whose an
@@ -26,6 +34,7 @@ DECLARE
     _taken  boolean;
     _agent  boolean := COALESCE((SELECT is_agent FROM user_account WHERE id = actor_id), false);
     _sender bigint := (SELECT m.channel_id FROM account_mail m JOIN card c ON c.id = m.channel_id AND c.deleted_at IS NULL);
+    _batch_emails text[] := ARRAY[]::text[]; -- this batch's sends, in order
 BEGIN
     FOR _idx, _raw IN
         SELECT (r.ord - 1)::int, r.value FROM jsonb_array_elements(inputs) WITH ORDINALITY AS r(value, ord)
@@ -66,12 +75,16 @@ BEGIN
         -- The send log, not the address rows: re-adding one address, or
         -- adding and removing fresh ones, sent without limit (review
         -- 2026-11-06 #7). Earlier sub-requests of this batch count too.
+        -- Person first, then address: every request locks in that order.
+        PERFORM pg_advisory_xact_lock(hashtextextended('kitp.person_email_code.person:' || _person, 0));
+        PERFORM pg_advisory_xact_lock(hashtextextended('kitp.person_email_code.email:' || _email, 0));
         IF (SELECT count(*) FROM person_email_code_sent
-            WHERE person_card_id = _person AND sent_at > now() - interval '1 hour') >= 5 THEN
+            WHERE person_card_id = _person AND sent_at > now() - interval '1 hour')
+           + cardinality(_batch_emails) >= 5 THEN
             RETURN QUERY SELECT _idx, false, 'limit'::text, 'person_email.add: at most 5 codes an hour; try again later'::text, NULL::jsonb;
             CONTINUE;
         END IF;
-        IF EXISTS (SELECT 1 FROM person_email_code_sent
+        IF _email = ANY(_batch_emails) OR EXISTS (SELECT 1 FROM person_email_code_sent
                    WHERE email = _email AND sent_at > now() - interval '1 minute') THEN
             RETURN QUERY SELECT _idx, false, 'limit'::text, 'person_email.add: a code went to that address a moment ago; wait a minute'::text, NULL::jsonb;
             CONTINUE;
@@ -86,9 +99,12 @@ BEGIN
         ON CONFLICT (person_card_id, email) DO UPDATE
             SET verify_code_hash = EXCLUDED.verify_code_hash, verify_expires_at = EXCLUDED.verify_expires_at,
                 verify_sent_at = EXCLUDED.verify_sent_at;
-        INSERT INTO person_email_code_sent (person_card_id, email) VALUES (_person, _email);
+        -- Counted by the PostRun (personemail.recordCodeSend), on its own
+        -- connection, as the mail goes: see above.
+        _batch_emails := array_append(_batch_emails, _email);
         DELETE FROM person_email_code_sent WHERE sent_at < now() - interval '1 day';
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,
-            jsonb_build_object('email', _email, 'sender_channel_id', _sender::text, 'send', NOT _taken);
+            jsonb_build_object('email', _email, 'sender_channel_id', _sender::text, 'send', NOT _taken,
+                               'person_card_id', _person::text);
     END LOOP;
 END $$;

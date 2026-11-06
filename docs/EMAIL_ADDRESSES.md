@@ -21,14 +21,21 @@ verified.
   code. A person has at most 20 addresses. Codes are counted as they are
   sent (`person_email_code_sent`), so removing an address doesn't reset a
   limit: at most 5 an hour per person, and to one address at most 1 a
-  minute and 5 a day, whoever asks. kitp keeps an HMAC of the code (a key
+  minute and 5 a day, whoever asks. A send is counted on its own
+  connection just before the mail goes out, so a request that fails after
+  sending still counts it, and requests for one person or one address are
+  taken one at a time (an advisory lock), so sending them at once doesn't
+  get past the limits either. kitp keeps an HMAC of the code (a key
   derived from `KITP_COMM_SECRET_KEY`), never the code. An agent can't add
   addresses; its owner adds their own.
 
 A verified address belongs to one person, and a sign-in doesn't take it.
 Adding one that is verified on someone else is answered like any other —
 it shows as waiting for its code — but no code goes out, so it can never be
-verified there: `add` doesn't tell whose an address is. A person's
+verified there: `add` doesn't tell whose an address is. It is checked and
+counted like any other, a paused account-emails mailbox included. What
+differs: nothing is sent, so it can't fail to send and it answers a little
+sooner. A person's
 addresses go when the person card is deleted or the login is revoked or
 unlinked (unless another live login is the same person's); the card keeps
 its email, as a contact's.
@@ -51,11 +58,14 @@ its email, as a contact's.
 
 ## Mail from any verified address
 
-Incoming mail is matched to a person by their verified addresses first,
-then by any person card's email (`comm.upsertPersonByEmail`,
+The sender of incoming mail is matched to a person by their verified
+addresses first, then by any person card's email (`comm.upsertPersonByEmail`,
 `person.upsert_by_email`). Mail from someone's old or second address files
 as them instead of making a new contact, even when a contact with that
-address exists. An address still waiting for its code matches nobody.
+address exists. An address still waiting for its code matches nobody. The
+other addresses on the mail (its To and Cc) are matched by card emails only:
+someone who Cc'd a user's private second address would otherwise have put
+that user on the thread, and seen their primary on the next staff reply.
 `person.upsert_by_email` matches verified addresses only for a workspace
 admin (intake files as System): a project's worker would otherwise learn
 whose an address is.

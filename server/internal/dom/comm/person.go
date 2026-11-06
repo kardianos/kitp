@@ -60,11 +60,18 @@ type PersonUpsertByEmailOutput struct {
 // freshly inserted. Used by both the dispatcher handler and the IMAP
 // parser; running both through the same helper keeps the upsert rules
 // in one place.
+//
+// byVerified says whether a person's verified addresses (person_email)
+// match: only for the sender of filed mail. An address in a To or Cc is
+// matched by card emails only — a Cc of someone's private second address
+// put that user on the thread, and the next staff reply showed the
+// outsider their primary (review 2026-11-06 round 8 L3).
 func upsertPersonByEmail(
 	ctx context.Context,
 	tx store.Querier,
 	snap *schema.Snapshot,
 	email, displayName, kindIfNew string,
+	byVerified bool,
 	actorID int64,
 ) (int64, bool, error) {
 	// NFC + lowercase so visually identical addresses ("Foo@x.com",
@@ -101,6 +108,7 @@ func upsertPersonByEmail(
 	lb.Set("email_def", emailADID)
 	lb.Set("person_type", personCTID)
 	lb.Set("email", trimmed)
+	lb.Set("by_verified", byVerified)
 	// A person's verified addresses (person_email) match too, and first:
 	// mail from someone's second address files as them
 	// (docs/EMAIL_ADDRESSES.md), even when a contact was made with it
@@ -118,7 +126,7 @@ func upsertPersonByEmail(
 		    SELECT pe.person_card_id, 0
 		    FROM person_email pe
 		    JOIN card c ON c.id = pe.person_card_id AND c.deleted_at IS NULL
-		    WHERE pe.email = lower(:email) AND pe.verified_at IS NOT NULL
+		    WHERE :by_verified::boolean AND pe.email = lower(:email) AND pe.verified_at IS NOT NULL
 		) m
 		ORDER BY m.pref, m.id
 		LIMIT 1

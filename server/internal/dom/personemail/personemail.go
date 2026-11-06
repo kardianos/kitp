@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/kitp/kitp/server/internal/dom/comm"
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/store"
 )
@@ -107,6 +108,8 @@ type AddOutput struct {
 	// as for any address but sends nothing, and the caller isn't told
 	// (review 2026-11-06 L2). Read from the SQL's `send`, never written.
 	skipSend bool
+	// personID is the caller's person, for the send log (recordCodeSend).
+	personID int64
 }
 
 // UnmarshalJSON reads the SQL's answer, including `send`.
@@ -115,11 +118,12 @@ func (o *AddOutput) UnmarshalJSON(b []byte) error {
 		Email           string `json:"email"`
 		SenderChannelID int64  `json:"sender_channel_id,string"`
 		Send            *bool  `json:"send"`
+		PersonCardID    int64  `json:"person_card_id,string"`
 	}
 	if err := json.Unmarshal(b, &w); err != nil {
 		return err
 	}
-	o.Email, o.SenderChannelID = w.Email, w.SenderChannelID
+	o.Email, o.SenderChannelID, o.personID = w.Email, w.SenderChannelID, w.PersonCardID
 	o.skipSend = w.Send != nil && !*w.Send
 	return nil
 }
@@ -238,16 +242,20 @@ var (
 
 // sendCodes mails each new code from the account-mail account. It runs in
 // the request's transaction after the SQL: a failed send fails the batch,
-// so no code is stored that never went out.
+// so no code is stored that never went out. Each send is counted for the
+// limits first, on its own connection (recordCodeSend).
+//
+// An address verified on someone else gets no mail (skipSend), but goes
+// through the same checks and is counted the same: a paused or faulted
+// mailbox refused a free address and passed a taken one, which told whose
+// it was (review 2026-11-06 round 8 L2). It can't fail to send, though,
+// and it answers sooner — docs/EMAIL_ADDRESSES.md.
 func sendCodes(ctx context.Context, tx store.Querier, ins []any, outs []any) error {
 	for i := range outs {
 		in, ok := ins[i].(AddInput)
 		out, ok2 := outs[i].(AddOutput)
 		if !ok || !ok2 {
 			return fmt.Errorf("person_email.add: unexpected types %T, %T", ins[i], outs[i])
-		}
-		if out.skipSend {
-			continue
 		}
 		cfg, err := comm.LoadSMTPConfig(ctx, tx, out.SenderChannelID)
 		if err != nil {
@@ -260,6 +268,12 @@ func sendCodes(ctx context.Context, tx store.Querier, ins []any, outs []any) err
 		}
 		if !cfg.Outbound().Ready() || cfg.From == "" {
 			return &reg.HandlerError{Code: "no_sender", Message: "the mail account for account emails has no way out or From address; ask an admin", InputIndex: i}
+		}
+		if err := recordCodeSend(ctx, tx, out.personID, out.Email); err != nil {
+			return err
+		}
+		if out.skipSend {
+			continue
 		}
 		msg := buildCodeMail(cfg.From, out.Email, in.code, publicURL())
 		detail := map[string]any{"recipient": out.Email, "purpose": "verify_address"}
@@ -288,6 +302,31 @@ func sendCodes(ctx context.Context, tx store.Querier, ins []any, outs []any) err
 		if err := comm.LogEvent(ctx, tx, cfg.ProjectID, cfg.ChannelID, "notify_ok", detail); err != nil {
 			return fmt.Errorf("person_email.add: log: %w", err)
 		}
+	}
+	return nil
+}
+
+// recordCodeSend logs a code send in person_email_code_sent, which the
+// limits count (person_email_add_batch). It goes in on the pool's own
+// connection, committed before the mail goes out: in the request's
+// transaction it rolled back with a batch that failed after sending, and
+// the mail went uncounted (review 2026-11-06 round 8 #5). Without the pool
+// (a test that didn't Register) it goes in the request.
+func recordCodeSend(ctx context.Context, tx store.Querier, person int64, email string) error {
+	b := named.New()
+	b.Set("person", person)
+	b.Set("email", email)
+	q, args, err := b.Compile(`INSERT INTO person_email_code_sent (person_card_id, email) VALUES (:person, :email)`)
+	if err != nil {
+		return fmt.Errorf("person_email.add: count the send: compile: %w", err)
+	}
+	if pool != nil {
+		_, err = pool.P.Exec(context.WithoutCancel(ctx), q, args...)
+	} else {
+		_, err = tx.Exec(ctx, q, args...)
+	}
+	if err != nil {
+		return fmt.Errorf("person_email.add: count the send: %w", err)
 	}
 	return nil
 }
