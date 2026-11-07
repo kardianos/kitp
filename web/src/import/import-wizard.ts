@@ -616,11 +616,12 @@ export class ImportWizard extends Control<ImportWizardConfig> {
     strong.textContent = String(this.rowCount);
     p.append('Map each CSV column to a task field. ', strong, ' rows detected.');
     // Dates are YYYY-MM-DD only (docs/MAIL_INTAKE_AND_CALENDARS.md §1); the
-    // preview lists every row whose due_date isn't.
+    // preview lists every row whose start_date / due_date isn't, or whose start
+    // is after its due date.
     const dates = document.createElement('p');
     dates.className = 'import-wizard__hint muted';
     dates.dataset.iwDateHint = '';
-    dates.textContent = 'due_date takes YYYY-MM-DD only (e.g. 2026-11-03). Re-save the sheet with that format if it shows dates another way; the preview lists any row it can’t read.';
+    dates.textContent = 'start_date and due_date take YYYY-MM-DD only (e.g. 2026-11-03). Re-save the sheet with that format if it shows dates another way; the preview lists any row it can’t read.';
     // The wizard is a dialog the route-based help overlay can't point at, so
     // its detailed instructions live here, folded.
     const how = document.createElement('details');
@@ -631,9 +632,9 @@ export class ImportWizard extends Control<ImportWizardConfig> {
     const steps = document.createElement('ul');
     for (const line of [
       'Each row becomes one task in this project. Map at least a title column; leave columns you don’t need on (ignore).',
-      'Columns: title, description, sort_order (a number), due_date (YYYY-MM-DD), assignee_email / assignee_name, milestone, component, tags (separate several with commas), id (ignored on import — kitp assigns new ids).',
+      'Columns: title, description, sort_order (a number), start_date and due_date (YYYY-MM-DD; a start can’t be after the due date), assignee_email / assignee_name, milestone, component, tags (separate several with commas), id (ignored on import — kitp assigns new ids).',
       'Next you choose what happens to people, milestones, components and tags kitp doesn’t know yet: match existing only, create them, skip the row, or leave the field blank.',
-      'Preview is a dry run: it counts what would be created and lists every row with a problem — a missing title, a due date that isn’t YYYY-MM-DD, a number that isn’t one. Nothing is written until you commit, and a commit with errors writes nothing at all.',
+      'Preview is a dry run: it counts what would be created and lists every row with a problem — a missing title, a date that isn’t YYYY-MM-DD, a start after its due date, a number that isn’t one. Nothing is written until you commit, and a commit with errors writes nothing at all.',
     ]) {
       const li = document.createElement('li');
       li.append(document.createTextNode(line));

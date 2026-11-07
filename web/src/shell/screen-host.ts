@@ -23,6 +23,8 @@
  *   list    → Inbox
  *   grid    → Grid      (the dense sortable table)
  *   project → Project   (the project detail / overview)
+ *   calendar → Calendar (tasks by date, a month / week grid)
+ *   timeline → Timeline (tasks as bars on a day axis, banded by GROUP)
  *   <other> → NotFound  (unknown layout, e.g. a typo'd screen card)
  *
  * The ScreenFilterBar mounts above the body (shared across task-list layouts).
@@ -116,6 +118,8 @@ const LAYOUT_TO_CONTROL: Record<string, string> = {
   project: 'Project',
   comms: 'CardListBody',
   pages: 'CardListBody',
+  calendar: 'Calendar',
+  timeline: 'Timeline',
 };
 
 /** Layouts that support the swim-lane (2nd) axis. Only the Kanban splits its
@@ -123,6 +127,13 @@ const LAYOUT_TO_CONTROL: Record<string, string> = {
  *  Grid / Inbox hide it (lanes are meaningless there). */
 export function layoutSupportsLanes(layout: string): boolean {
   return layout === 'kanban';
+}
+
+/** Layouts that use the GROUP picker. The Calendar draws by date alone, so the
+ *  filter bar hides GROUP there; every other layout groups (the Timeline into
+ *  bands). docs/TIMELINE_AND_CALENDAR.md T5. */
+export function layoutShowsGroup(layout: string): boolean {
+  return layout !== 'calendar';
 }
 
 /** Resolve a layout string to the body control type. Unknown → '' (→ NotFound). */
@@ -441,6 +452,7 @@ export class ScreenHost extends Control<ScreenHostConfig> {
         // hide lanes + default to "No group". view actions (Inbox's Mine-only /
         // Routed-to-me) likewise come from the layout, not the slug.
         enableLanes: layoutSupportsLanes(layout),
+        showGroup: layoutShowsGroup(layout),
         requireGroup: layoutRequiresGroup(layout),
         defaultGroup: defaultGroupForLayout(layout),
         viewActions: viewActionsForLayout(layout),

@@ -107,6 +107,8 @@ export class MyScreenSettings extends Control<MyScreenSettingsConfig> {
       [
         ['list', 'List'],
         ['grid', 'Grid (a table)'],
+        ['calendar', 'Calendar (tasks by date)'],
+        ['timeline', 'Timeline (tasks by date)'],
       ],
       this.layout,
     );
@@ -122,6 +124,14 @@ export class MyScreenSettings extends Control<MyScreenSettingsConfig> {
     );
     lists.dataset.myScreenLists = '';
     this.listen(lists, 'change', () => (this.listCardType = lists.value));
+    // A calendar or a timeline lists tasks: a thread has no dates to draw.
+    const datesOnly = (): void => {
+      const date = this.layout === 'calendar' || this.layout === 'timeline';
+      lists.disabled = date;
+      if (date) lists.value = 'task';
+    };
+    datesOnly();
+    this.listen(layout, 'change', datesOnly);
 
     form.append(
       field('Name', name),
@@ -246,7 +256,8 @@ export class MyScreenSettings extends Control<MyScreenSettingsConfig> {
         ...(id !== undefined ? { id } : {}),
         title,
         layout: this.layout,
-        listCardType: this.listCardType,
+        // The date layouts list tasks (a thread has no start or due date).
+        listCardType: this.layout === 'calendar' || this.layout === 'timeline' ? 'task' : this.listCardType,
         predicate: predicateFromScope(this.scope),
       },
       (out) => {

@@ -117,6 +117,12 @@ export interface ScreenFilterBarConfig extends BaseControlConfig {
    */
   requireGroup?: boolean;
   /**
+   * Show the Display menu (the GROUP / LANE pickers). Default true. The host
+   * turns it off for a layout that never groups (the Calendar), so the bar
+   * doesn't offer a picker that does nothing there.
+   */
+  showGroup?: boolean;
+  /**
    * Screen-specific view actions mounted pulled-RIGHT on the "View" row (row 1),
    * after the preset selector + its ⋯ menu. The host registers per-screen
    * controls here — e.g. the Grid screen registers its "Columns" chooser, since
@@ -359,6 +365,8 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
         setDisplayOpen(false);
       }
     });
+
+    if (this.config.showGroup === false) displayWrap.style.display = 'none';
 
     // Display sits left of the "+ Filter" entry + active chips.
     /* ---- the QUICK-CHIPS surface (pinned per-attribute one-tap filters) ----

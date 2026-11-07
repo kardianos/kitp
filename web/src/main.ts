@@ -45,6 +45,8 @@ import { registerKanbanSpecs } from './kanban/specs.js';
 import { registerKanbanControls } from './kanban/kanban.js';
 import { registerGridCardRefAttrs, registerGridBulkSpecs } from './grid/specs.js';
 import { registerGrid } from './grid/grid.js';
+import { registerCalendar } from './calendar/calendar.js';
+import { registerTimeline } from './timeline/timeline.js';
 import { registerGridColumns } from './grid/grid-columns.js';
 import { registerBulkActionBar } from './grid/bulk-action-bar.js';
 import { registerTagChip } from './grid/tag-chip.js';
@@ -303,6 +305,9 @@ function boot(): void {
   registerScreenHost();
   registerScreenFilterBar();
   registerKanbanControls();
+  // The date layouts (docs/TIMELINE_AND_CALENDAR.md).
+  registerCalendar();
+  registerTimeline();
   registerTagChip();
   registerGrid();
   // The Grid's "Columns" chooser — mounted on the filter bar's View row

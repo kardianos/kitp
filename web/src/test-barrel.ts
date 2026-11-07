@@ -183,6 +183,19 @@ export { ACCOUNT_LINKS, ACCOUNT_SECTIONS, AccountPage, registerAccountPage } fro
 export { logout, LOGOUT_PATH } from './shell/logout.js';
 export { ScreenFilterBar, registerScreenFilterBar, focusScreenSearch } from './shell/screen-filter-bar.js';
 export { Grid, registerGrid } from './grid/grid.js';
+
+// The date layouts (docs/TIMELINE_AND_CALENDAR.md): the shared schedule
+// pieces and the Calendar / Timeline controls.
+export * as scheduleDates from './schedule/dates.js';
+export * as schedulePlacement from './schedule/placement.js';
+export * as scheduleReschedule from './schedule/reschedule.js';
+export * as scheduleData from './schedule/schedule-data.js';
+export * as calendarLayout from './calendar/calendar-layout.js';
+export * as timelineLayout from './timeline/timeline-layout.js';
+export { Calendar, registerCalendar, MONTH_LANES, WEEK_LANES } from './calendar/calendar.js';
+export { Timeline, registerTimeline, TIMELINE_ROW_HEIGHT } from './timeline/timeline.js';
+export { readQueryParam, writeQueryParams } from './shell/router.js';
+export { layoutShowsGroup } from './shell/screen-host.js';
 export { GridColumns, registerGridColumns } from './grid/grid-columns.js';
 export { TagChip, registerTagChip } from './grid/tag-chip.js';
 

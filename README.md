@@ -29,11 +29,18 @@ bundled with esbuild (no framework, no npm runtime deps).
 
 - Tasks move through a status flow, enforced server-side, with a transition
   bar in the UI. A task tracking project starts with the Inbox, Grid,
-  Kanban, Incoming, Recently Closed and Project screens; a help desk one
-  with support-ticket statuses (New, Open, Waiting on customer, Solved,
+  Kanban, Incoming, Recently Closed, Project and Timeline screens; a help
+  desk one with support-ticket statuses (New, Open, Waiting on customer, Solved,
   Closed) and the Unassigned, My tickets, Board and All tickets screens.
-  A screen is a layout (list, grid, kanban, …) over a filter, editable
-  under PROJECT → Screens, and a view saves a screen's filter choices.
+  A screen is a layout (list, grid, kanban, calendar, timeline, …) over a
+  filter, editable under PROJECT → Screens, and a view saves a screen's
+  filter choices.
+- Dates: a task has an optional start date beside its due date, and the
+  start is never after the due date. The Calendar layout shows tasks on a
+  month or week grid, the Timeline as bars on a day axis, in bands by the
+  screen's GROUP (milestones by their date). Drag a task to move it, drag
+  either end of a bar to change that date, or drag an undated task in from
+  the Unscheduled tray. See `docs/TIMELINE_AND_CALENDAR.md`.
 - Approvals: ask named people to approve a task's status change. Votes are
   recorded but never block the change, and an agent can vote on behalf of
   its owner. "Waiting on me" is a task filter, and a request can be emailed
@@ -45,7 +52,7 @@ bundled with esbuild (no framework, no npm runtime deps).
   review. See `docs/links.md`.
 - Project export (CSV, a zip with activity and attachments, or XLSX) and
   CSV import (dates as YYYY-MM-DD; every date kitp takes in is checked).
-- Calendar feeds (Account → Calendars): your tasks' due dates as an `.ics`
+- Calendar feeds (Account → Calendars): your tasks' dates as an `.ics`
   feed for Google Calendar, Outlook or Apple Calendar. Each calendar has
   a filter and a window of days, and any number of secret URLs, each with
   a comment, revocable one at a time.

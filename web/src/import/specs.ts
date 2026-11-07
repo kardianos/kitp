@@ -64,6 +64,7 @@ export const TARGET_ATTRS: readonly string[] = [
   'tags',
   'description',
   'sort_order',
+  'start_date',
   'due_date',
 ] as const;
 

@@ -107,6 +107,9 @@ export function viewActionsForLayout(layout: string): Array<{ type: string }> {
       return [{ type: 'NewTaskButton' }, { type: 'GridColumns' }];
     case 'pages':
       return [{ type: 'NewPageButton' }];
+    case 'calendar':
+    case 'timeline':
+      return [{ type: 'NewTaskButton' }];
     default:
       return [];
   }

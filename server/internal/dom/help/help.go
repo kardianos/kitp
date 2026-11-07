@@ -61,6 +61,8 @@ var topicFiles = map[string]string{
 	"layout.kanban":        "content/layout_kanban.md",
 	"layout.pair":          "content/layout_pair.md",
 	"layout.pages":         "content/layout_pages.md",
+	"layout.calendar":      "content/layout_calendar.md",
+	"layout.timeline":      "content/layout_timeline.md",
 }
 
 // GetTopicInput is the wire shape for help.get_topic.

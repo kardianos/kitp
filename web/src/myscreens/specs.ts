@@ -24,7 +24,7 @@ export const MY_SCREEN_SPEC = {
 export interface MyScreen {
   id: string;
   title: string;
-  /** 'list' or 'grid'. */
+  /** 'list', 'grid', 'calendar' or 'timeline'. */
   layout: string;
   /** 'task' or 'comm' (threads). */
   listCardType: string;

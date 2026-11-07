@@ -280,6 +280,36 @@ export function cardUrl(id: bigint | string, route: CardRoute = 'task'): string 
   return CARD_URL[route](id);
 }
 
+/* -------------------------------------------------------------------------- */
+/* Query state — a view's own position (the Calendar's month, the Timeline's   */
+/* zoom) rides in the URL query so it survives a reload and a shared link.     */
+/* -------------------------------------------------------------------------- */
+
+/** One query parameter of the current URL, or null. */
+export function readQueryParam(name: string): string | null {
+  if (typeof location === 'undefined') return null;
+  return new URLSearchParams(location.search || '').get(name);
+}
+
+/**
+ * Set (string) or drop (null) query parameters on the current URL in place —
+ * a `replaceState`, so stepping through months doesn't fill the back button,
+ * and the route itself (path) doesn't change, so nothing re-renders.
+ * Parameters not named are kept.
+ */
+export function writeQueryParams(params: Readonly<Record<string, string | null>>): void {
+  if (typeof location === 'undefined' || typeof history === 'undefined') return;
+  const q = new URLSearchParams(location.search || '');
+  for (const [k, v] of Object.entries(params)) {
+    if (v === null || v === '') q.delete(k);
+    else q.set(k, v);
+  }
+  const search = q.toString();
+  const path = (location.pathname || '/') + (search !== '' ? `?${search}` : '');
+  if (path === (location.pathname || '/') + (location.search || '')) return;
+  history.replaceState({ path }, '', path);
+}
+
 /** `/admin/:key` — an admin MasterDetail screen. */
 export function adminUrl(key: string): string {
   return `/admin/${key}`;

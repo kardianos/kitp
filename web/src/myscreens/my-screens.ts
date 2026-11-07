@@ -76,6 +76,14 @@ function str(v: unknown): string {
   return typeof v === 'string' ? v : '';
 }
 
+/** How the list names a personal screen's layout. */
+const LAYOUT_LABEL: Readonly<Record<string, string>> = {
+  list: 'List',
+  grid: 'Grid',
+  calendar: 'Calendar',
+  timeline: 'Timeline',
+};
+
 export class MyScreens extends Control<MyScreensConfig> {
   private screens: MyScreen[] = [];
   private views: MyView[] = [];
@@ -176,7 +184,7 @@ export class MyScreens extends Control<MyScreensConfig> {
       const what = textEl(
         'span',
         'muted',
-        `${s.layout === 'grid' ? 'Grid' : 'List'} of ${s.listCardType === 'comm' ? 'threads' : 'tasks'} · ${scopeSummary(scopeFromPredicate(s.predicate), this.projectNames)}${s.viewCount > 0 ? ` · ${s.viewCount} view${s.viewCount === 1 ? '' : 's'}` : ''}`,
+        `${LAYOUT_LABEL[s.layout] ?? 'List'} of ${s.listCardType === 'comm' ? 'threads' : 'tasks'} · ${scopeSummary(scopeFromPredicate(s.predicate), this.projectNames)}${s.viewCount > 0 ? ` · ${s.viewCount} view${s.viewCount === 1 ? '' : 's'}` : ''}`,
       );
       const up = this.iconButton('↑', 'Move up in Mine', i === 0, () => this.move(i, -1));
       up.dataset.myScreenUp = s.id;

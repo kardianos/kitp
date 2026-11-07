@@ -1,6 +1,6 @@
 # Screens
 
-A **screen** is one view inside a project. Each screen has a layout (list, grid, kanban, or pair), a slug that appears in its URL, and an optional keyboard hotkey. Tasks themselves are never owned by a screen; the screen just decides how to surface them.
+A **screen** is one view inside a project. Each screen has a layout (list, grid, kanban, calendar, timeline, or pair), a slug that appears in its URL, and an optional keyboard hotkey. Tasks themselves are never owned by a screen; the screen just decides how to surface them.
 
 This page is also where **filters** are edited — the right pane lists every filter card parented to the selected screen. The filter section below covers that side of the workflow.
 
@@ -10,7 +10,7 @@ This page is also where **filters** are edited — the right pane lists every fi
 | ---------------- | ---------------------------------------------------------------------- |
 | `title`          | Display name shown in the sidebar and breadcrumbs.                     |
 | `slug`           | URL path segment (`/project/:id/screen/<slug>`).                       |
-| `layout`         | Renderer: `list`, `grid`, `kanban`, or `pair`.                         |
+| `layout`         | Renderer: `list`, `grid`, `kanban`, `calendar`, `timeline`, or `pair`. |
 | `hotkey`         | Single-key shortcut to jump to the screen.                             |
 | `flow_ref`       | Optional flow that supplies the status transitions on this screen.     |
 | `default_filter` | Which child filter card loads on first visit.                          |

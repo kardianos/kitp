@@ -19,6 +19,7 @@ import { SPEC, type SelectWithAttributesOutput } from '../kanban/specs.js';
 import { asAttrId, type CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { CARD_SEARCH_SPEC } from '../ui/specs.js';
 import type { RefPickerConfig } from '../ui/ref-picker.js';
+import type { DatePickerConfig } from '../ui/datepicker.js';
 import { DropPlaceholder, computeDropTarget } from '../ui/drag-placeholder.js';
 
 import { icon } from '../ui/icons.js';
@@ -130,6 +131,9 @@ export class EnumManager extends Control<EnumManagerConfig> {
    *  schema) — each gets a picker on every value row, e.g. a status's
    *  `publishes_to` (the portals a page entering it is published to). */
   private refAttrsByType: Record<string, RefAttr[]> = {};
+  /** Each managed type's date attributes (a milestone's due_date), one date
+   *  picker per value — schema-driven like the ref pickers. */
+  private dateAttrsByType: Record<string, string[]> = {};
   /** The pickers spawned by the current paint, disposed on the next. */
   private refPickers: Control[] = [];
   /** Picker spawns queued while the current paint builds its rows. */
@@ -245,6 +249,15 @@ export class EnumManager extends Control<EnumManagerConfig> {
           }
         }
         this.refAttrsByType = refAttrs;
+
+        const dateAttrs: Record<string, string[]> = {};
+        for (const r of rows) {
+          if (r.value_type !== 'date') continue;
+          for (const b of r.bound_to) {
+            if (managed.has(b.card_type_name)) (dateAttrs[b.card_type_name] ??= []).push(r.name);
+          }
+        }
+        this.dateAttrsByType = dateAttrs;
 
         this.reloadAll();
       },
@@ -761,7 +774,7 @@ export class EnumManager extends Control<EnumManagerConfig> {
         if (phaseSel.value === cur) return;
         this.setValuePhase(e, card, phaseSel.value);
       });
-      row.append(reorder, input, phaseSel, ...this.renderRefPickers(e, card), remove);
+      row.append(reorder, input, phaseSel, ...this.renderRefPickers(e, card), ...this.renderDatePickers(e, card), remove);
     } else if (this.hasColorAttr(e.cardType)) {
       // Color-bearing value types (tag): a small palette picker per value.
       // Writes the `color` text attribute; the chip readers (grid pill, tag
@@ -772,9 +785,9 @@ export class EnumManager extends Control<EnumManagerConfig> {
       this.listen(colorSel, 'change', () => {
         this.setValueColor(card, colorSel.value);
       });
-      row.append(reorder, input, colorSel, ...this.renderRefPickers(e, card), remove);
+      row.append(reorder, input, colorSel, ...this.renderRefPickers(e, card), ...this.renderDatePickers(e, card), remove);
     } else {
-      row.append(reorder, input, ...this.renderRefPickers(e, card), remove);
+      row.append(reorder, input, ...this.renderRefPickers(e, card), ...this.renderDatePickers(e, card), remove);
     }
     return row;
   }
@@ -835,6 +848,40 @@ export class EnumManager extends Control<EnumManagerConfig> {
       // Spawned by paint() once the rows are in the list.
       this.pendingRefSpawns.push(() => {
         this.refPickers.push(this.spawn('RefPicker', cfg, host));
+      });
+      return host;
+    });
+  }
+
+  /**
+   * One date picker per date attribute of the value's type (dateAttrsByType),
+   * e.g. a milestone's due date, which the Calendar and Timeline show. Each
+   * change writes it through attribute.update (optimistic on the loaded card).
+   */
+  private renderDatePickers(e: ManagedEnum, card: CardWithAttrs): HTMLElement[] {
+    return (this.dateAttrsByType[e.cardType] ?? []).map((name) => {
+      const host = document.createElement('span');
+      host.className = 'enum-manager__date';
+      host.dataset.enumDate = name;
+      host.title = humanise(name);
+      const raw = card.attributes[name];
+      const cfg: DatePickerConfig = {
+        type: 'DatePicker',
+        value: typeof raw === 'string' && raw !== '' ? raw : null,
+        placeholder: humanise(name),
+        'aria-label': `${humanise(name)} for ${this.titleOf(card)}`,
+        onChange: (value) => {
+          card.attributes[name] = value; // optimistic
+          this.ctx.api.callByName(
+            SPEC.attributeUpdate,
+            { cardId: card.id, attributeName: name, value },
+            () => {},
+            { alive: () => this.isAlive() },
+          );
+        },
+      };
+      this.pendingRefSpawns.push(() => {
+        this.refPickers.push(this.spawn('DatePicker', cfg, host));
       });
       return host;
     });
