@@ -146,6 +146,7 @@ msgraph_channel_id,    text,        true, null, false
 activity_filter,       text,        true, null, false
 parent_task,           card_ref,    true, $card_type.task, false
 parent_relationship,   text,        true, null, false
+start_date,            date,        true, null, false
 due_date,              date,        true, null, false
 originator,            card_ref,    true, $card_type.person, false
 color,                 text,        true, null, false
@@ -206,6 +207,7 @@ $card_type.project,   $attribute_def.description,       false, 5
 $card_type.task,      $attribute_def.sort_order,        false, 6
 $card_type.task,      $attribute_def.parent_task,         false, 7
 $card_type.task,      $attribute_def.parent_relationship, false, 8
+$card_type.task,      $attribute_def.start_date,          false, 8
 $card_type.task,      $attribute_def.due_date,            false, 9
 $card_type.task,      $attribute_def.originator,          false, 10
 $card_type.milestone, $attribute_def.sort_order,        false, 4

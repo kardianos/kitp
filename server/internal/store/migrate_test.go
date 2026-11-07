@@ -68,8 +68,8 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// attachments_left_off (message), +symbol (watch lists),
 		// +list_card_type / my_default (personal screens and views),
 		// +reply_cc (message), +comm_confirmed (thread), +reply_message_id
-		// and +reply_refused (message).
-		{`SELECT count(*) FROM attribute_def`, 110},
+		// and +reply_refused (message), +start_date (task).
+		{`SELECT count(*) FROM attribute_def`, 111},
 		// +3 on activity_sink (channel_ref / rollup_minutes / predicate)
 		// +7 on activity_subscription, +4 on link, +7 on approval,
 		// +bundle_key on project, +publishes_to on status, +5 on page,
@@ -79,8 +79,9 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// email_attachments) and +2 on reply_body (relay_of,
 		// attachments_left_off), +4 on watch_list, +2 on screen
 		// (list_card_type, predicate) and +1 on filter (my_default), +1 on
-		// reply_body (reply_cc) and +1 on comm (comm_confirmed).
-		{`SELECT count(*) FROM edge`, 163},
+		// reply_body (reply_cc) and +1 on comm (comm_confirmed), +1 on
+		// task (start_date).
+		{`SELECT count(*) FROM edge`, 164},
 		// +activity_subscription.set / .delete.
 		{`SELECT count(*) FROM process`, 8},
 		{`SELECT count(*) FROM process_step`, 9},
@@ -1038,8 +1039,8 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		{seedOnly(`SELECT count(*) FROM card c WHERE %s`, "c.id"), 30},
 		{`SELECT count(*) FROM role`, 5},
 		{`SELECT count(*) FROM card_type`, 23},
-		{`SELECT count(*) FROM attribute_def`, 110},
-		{`SELECT count(*) FROM edge`, 163},
+		{`SELECT count(*) FROM attribute_def`, 111},
+		{`SELECT count(*) FROM edge`, 164},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		// test_demo adds none of its own.
@@ -1975,5 +1976,59 @@ func TestForwardMigration0045CrossProjectParentTask(t *testing.T) {
 	}
 	if n := links(inside); n != 2 {
 		t.Errorf("a subtask within its project has %d link rows, want 2", n)
+	}
+}
+
+// TestForwardMigration0046TaskStartDate: an install from before start_date
+// gets the attribute and its task edge exactly as a fresh one has them from
+// the seed — a date, optional, ordering 8 (just before due_date) — and a
+// further boot is a no-op.
+func TestForwardMigration0046TaskStartDate(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0046")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+	const shape = `SELECT coalesce(string_agg(ct.name || '/' || ad.value_type || '/' || e.is_required::text || '/' || e.ordering::text, ','), '')
+		FROM attribute_def ad
+		JOIN edge e ON e.attribute_def_id = ad.id
+		JOIN card_type ct ON ct.id = e.card_type_id
+		WHERE ad.name = 'start_date'`
+	read := func() (string, int64, int64) {
+		var s string
+		var defs, edges int64
+		if err := pool.QueryRow(ctx, shape).Scan(&s); err != nil {
+			t.Fatalf("start_date shape: %v", err)
+		}
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM attribute_def`).Scan(&defs); err != nil {
+			t.Fatal(err)
+		}
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM edge`).Scan(&edges); err != nil {
+			t.Fatal(err)
+		}
+		return s, defs, edges
+	}
+	freshShape, freshDefs, freshEdges := read()
+	if freshShape != "task/date/false/8" {
+		t.Fatalf("fresh seed's start_date is %q, want task/date/false/8", freshShape)
+	}
+	for _, stmt := range []string{
+		`DELETE FROM edge WHERE attribute_def_id IN (SELECT id FROM attribute_def WHERE name = 'start_date')`,
+		`DELETE FROM attribute_def WHERE name = 'start_date'`,
+		`DELETE FROM schema_version WHERE name = '0046_task_start_date'`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("simulate an older install (%s): %v", stmt, err)
+		}
+	}
+	for i := range 2 {
+		if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+			t.Fatalf("apply %d after removal: %v", i+1, err)
+		}
+		gotShape, gotDefs, gotEdges := read()
+		if gotShape != freshShape || gotDefs != freshDefs || gotEdges != freshEdges {
+			t.Errorf("apply %d after removal: start_date %q (%d defs, %d edges), want the fresh seed's %q (%d, %d)",
+				i+1, gotShape, gotDefs, gotEdges, freshShape, freshDefs, freshEdges)
+		}
 	}
 }

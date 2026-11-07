@@ -73,13 +73,15 @@ func TestDatesAreCheckedOnTheWayIn(t *testing.T) {
 		data             any
 		ok               bool
 	}
-	update := func(v any) map[string]any {
-		return map[string]any{"card_id": fmt.Sprint(task), "attribute_name": "due_date", "value": v}
+	updateOf := func(attr string, v any) map[string]any {
+		return map[string]any{"card_id": fmt.Sprint(task), "attribute_name": attr, "value": v}
 	}
-	newTask := func(v any) map[string]any {
+	newTaskWith := func(attr string, v any) map[string]any {
 		return map[string]any{"card_type_name": "task", "parent_card_id": fmt.Sprint(project), "title": "N",
-			"attributes": map[string]any{"due_date": v}}
+			"attributes": map[string]any{attr: v}}
 	}
+	update := func(v any) map[string]any { return updateOf("due_date", v) }
+	newTask := func(v any) map[string]any { return newTaskWith("due_date", v) }
 	for _, c := range []check{
 		{"update: a date", "attribute", "update", update("2026-12-01"), true},
 		{"update: a timestamp", "attribute", "update", update("2026-12-01T10:00:00Z"), false},
@@ -89,6 +91,13 @@ func TestDatesAreCheckedOnTheWayIn(t *testing.T) {
 		{"update: removal", "attribute", "update", update(nil), true},
 		{"insert: a date", "card", "insert", newTask("2026-12-02"), true},
 		{"insert: words", "card", "insert", newTask("Dec 2"), false},
+		// start_date is checked as a date by its value_type, like due_date.
+		{"start_date update: a date", "attribute", "update", updateOf("start_date", "2026-11-20"), true},
+		{"start_date update: not a real day", "attribute", "update", updateOf("start_date", "2026-02-30"), false},
+		{"start_date update: a postgres keyword", "attribute", "update", updateOf("start_date", "today"), false},
+		{"start_date update: removal", "attribute", "update", updateOf("start_date", nil), true},
+		{"start_date insert: a date", "card", "insert", newTaskWith("start_date", "2026-11-01"), true},
+		{"start_date insert: words", "card", "insert", newTaskWith("start_date", "Nov 1"), false},
 		{"activity: from_date", "activity", "select", map[string]any{"card_id": fmt.Sprint(task), "from_date": "2026-11-01"}, true},
 		{"activity: from_date keyword", "activity", "select", map[string]any{"card_id": fmt.Sprint(task), "from_date": "yesterday"}, false},
 		{"activity: to_date slashes", "activity", "select", map[string]any{"card_id": fmt.Sprint(task), "to_date": "11/03/2026"}, false},
@@ -100,6 +109,8 @@ func TestDatesAreCheckedOnTheWayIn(t *testing.T) {
 			"tree": map[string]any{"connective": "and", "children": []any{map[string]any{"attr": "due_date", "op": "eq", "values": []any{"2026-12-02"}}}}}, true},
 		{"filter: not a date", "card", "select_with_attributes", map[string]any{"card_type_name": "task",
 			"tree": map[string]any{"connective": "and", "children": []any{map[string]any{"attr": "due_date", "op": "in", "values": []any{"soon"}}}}}, false},
+		{"filter: a start date", "card", "select_with_attributes", map[string]any{"card_type_name": "task",
+			"tree": map[string]any{"connective": "and", "children": []any{map[string]any{"attr": "start_date", "op": "eq", "values": []any{"2026-11-01"}}}}}, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := call(t, srv, c.endpoint, c.action, c.data)

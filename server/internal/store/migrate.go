@@ -1608,6 +1608,27 @@ USING attribute_def ad
 WHERE ad.id = av.attribute_def_id AND ad.name IN ('parent_task', 'parent_relationship')
   AND av.card_id IN (SELECT card_id FROM crossing);`,
 	},
+	{
+		// A task's start_date (docs/TIMELINE_AND_CALENDAR.md): optional, a
+		// YYYY-MM-DD like due_date, which the timeline and calendar views
+		// draw a task's span from. Ordering 8 sorts it after
+		// parent_relationship ("Parent…" < "Start…") and before due_date (9)
+		// on the detail panel. Validation, filters and the date picker key
+		// on value_type 'date', so nothing else is needed. Idempotent — ON
+		// CONFLICT DO NOTHING makes it a no-op on a fresh DB whose seed has
+		// both rows.
+		id: "0046_task_start_date",
+		sql: `
+INSERT INTO attribute_def (name, value_type, target_card_type_id, is_built_in, enum_managed)
+VALUES ('start_date', 'date', NULL, true, false)
+ON CONFLICT (name) DO NOTHING;
+INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+SELECT ct.id, ad.id, false, 8
+FROM card_type ct
+JOIN attribute_def ad ON ad.name = 'start_date'
+WHERE ct.name = 'task'
+ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

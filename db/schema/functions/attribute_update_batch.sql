@@ -12,6 +12,11 @@
 --      and the read path store / expect JSON numbers. The CASE arms
 --      canonicalise to numeric jsonb before the UPSERT so equality
 --      filters match regardless of write origin.
+--   3b. Dates: YYYY-MM-DD and a real day (iso_date_ok); a start_date or
+--      due_date also as a pair with the card's other one — the start
+--      never after the due date (date_order_problem). Failures →
+--      'validation'. Such a write holds the card FOR NO KEY UPDATE (1b)
+--      so two of them take turns.
 --   4. Project-scope check: every card_ref / card_ref[] value must
 --      either be global (no enclosing project — e.g. person) or share
 --      the target card's enclosing project. Resolves the enclosing
@@ -65,6 +70,7 @@ DECLARE
     _attr_name text;
     _value jsonb;
     _value_norm jsonb;
+    _date_problem text;
     _card_type_id bigint;
     _attr_def_id bigint;
     _is_required boolean;
@@ -201,7 +207,17 @@ BEGIN
         --     a status set during a move landed in the destination with the
         --     source project's status, which no flow step leaves (review
         --     2026-11-06 round 8 #11). Shares don't wait on each other.
-        SELECT card_type_id INTO _card_type_id FROM card WHERE id = _card_id FOR SHARE;
+        --     A start_date / due_date write holds it FOR NO KEY UPDATE
+        --     instead: the two dates are judged as a pair (step 3's date
+        --     arm), so a second writer of either waits for the first to
+        --     commit, then reads its date. Taken this strong at once — not
+        --     upgraded from a share, as the attribute_value_date_order
+        --     trigger's own lock would — two date writers can't deadlock.
+        IF _attr_name IN ('start_date', 'due_date') THEN
+            SELECT card_type_id INTO _card_type_id FROM card WHERE id = _card_id FOR NO KEY UPDATE;
+        ELSE
+            SELECT card_type_id INTO _card_type_id FROM card WHERE id = _card_id FOR SHARE;
+        END IF;
         IF NOT FOUND THEN
             RETURN QUERY SELECT _idx, false, 'card_not_found'::text,
                 format('attribute.update: card %s not found', _card_id), NULL::jsonb;
@@ -321,6 +337,20 @@ BEGIN
                     format('attribute.update: %s: not a date (YYYY-MM-DD): %s', _attr_name, _value::text),
                     NULL::jsonb;
                 CONTINUE;
+            END IF;
+            -- The start is never after the due date (date_order_problem;
+            -- docs/TIMELINE_AND_CALENDAR.md T8): judged on the pair this
+            -- write leaves — the new date and the card's other one as
+            -- stored (read under step 1b's lock).
+            IF _attr_name IN ('start_date', 'due_date') THEN
+                _date_problem := date_order_problem(
+                    CASE WHEN _attr_name = 'start_date' THEN _value #>> '{}' ELSE card_date(_card_id, 'start_date') END,
+                    CASE WHEN _attr_name = 'due_date' THEN _value #>> '{}' ELSE card_date(_card_id, 'due_date') END);
+                IF _date_problem IS NOT NULL THEN
+                    RETURN QUERY SELECT _idx, false, 'validation'::text,
+                        format('attribute.update: %s: %s', _attr_name, _date_problem), NULL::jsonb;
+                    CONTINUE;
+                END IF;
             END IF;
             _value_norm := _value;
             _value_card_ids := ARRAY[]::bigint[];

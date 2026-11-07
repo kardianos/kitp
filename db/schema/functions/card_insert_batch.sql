@@ -364,6 +364,14 @@ BEGIN
             RETURN QUERY SELECT _idx, false, 'validation'::text, _rej_msg, NULL::jsonb;
             CONTINUE;
         END IF;
+        --     And the start is never after the due date (date_order_problem;
+        --     docs/TIMELINE_AND_CALENDAR.md T8). A JSON null reads as NULL.
+        _rej_msg := date_order_problem(_attrs->>'start_date', _attrs->>'due_date');
+        IF _rej_msg IS NOT NULL THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                format('card.insert: %s', _rej_msg), NULL::jsonb;
+            CONTINUE;
+        END IF;
 
         -- 8. Per-project scope check for card_ref / card_ref[] initial
         --    values. Only runs when the new card has a parent (top-level

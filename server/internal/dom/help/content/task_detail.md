@@ -18,7 +18,7 @@ The page is split into a main column and a right-hand attribute rail.
 | **Add comment**    | The composer at the top of the comments section. Mod+Enter posts. |
 | **Comments**       | Inline markdown bodies, newest-first, each stamped with its local date + time. Pencil on your own comment opens the inline editor; edits write an audit row to the activity log. |
 | **Activity**       | The full audit stream — one line per event, including `commented` and `edited a comment` rows that point at `c<id>`. |
-| **Right rail**     | Per-attribute side panel (status, assignee, milestone, tags, originator, due date, …). Click any row to open its picker. |
+| **Right rail**     | Per-attribute side panel (status, assignee, milestone, tags, originator, start date, due date, …). Click any row to open its picker. A start date can't be after the due date (the same day is fine). |
 
 ## Watch lists
 
