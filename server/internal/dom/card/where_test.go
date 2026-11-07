@@ -307,6 +307,41 @@ func TestTree_ExistsAndNotExists(t *testing.T) {
 	}
 }
 
+// TestTree_ExistsSkipsClearedValues: attribute.update clears a value by
+// storing a JSON null, and a cleared value is not set — "exists" skips it and
+// "not exists" counts it (the Calendar / Timeline split dated tasks from
+// undated ones this way).
+func TestTree_ExistsSkipsClearedValues(t *testing.T) {
+	srv, _ := setupAttr(t, "kitp_test_card_tree_exist_cleared")
+	_, ids, _ := seedTasks(t, srv, []map[string]any{
+		{"due_date": "2026-11-20"},
+		{"due_date": "2026-11-21"},
+		{},
+	})
+	ctx := auth.WithSystemUser(context.Background())
+	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "clear", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_id":"%d","attribute_name":"due_date","value":null}`, ids[1]))},
+	}})
+	if !resp.Subresponses[0].OK {
+		t.Fatalf("clear due_date: %+v", resp.Subresponses[0])
+	}
+	project := parentOf(t, srv, ids[0])
+	for _, c := range []struct {
+		op   string
+		want []int64
+	}{
+		{"exists", sortedInts(ids[0])},
+		{"not exists", sortedInts(ids[1], ids[2])},
+	} {
+		rows := queryTree(t, srv, project,
+			fmt.Sprintf(`{"connective":"and","children":[{"attr":"due_date","op":%q}]}`, c.op))
+		if got := rowIDs(rows); !equalIDs(got, c.want) {
+			t.Errorf("due_date %s: got %v, want %v", c.op, got, c.want)
+		}
+	}
+}
+
 // TestTree_NestedAndOrNot exercises one nested case combining all three
 // connectives:  status = "open" AND ((assignee = 1) OR (NOT (assignee
 // exists))).

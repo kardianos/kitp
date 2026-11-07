@@ -442,14 +442,16 @@ func compileLeaf(n CardWhereTreeNode, c *compileCtx) (string, error) {
 			WHERE av.card_id = c.id AND ad.name = %s AND av.value IN (%s)%s
 		)`, addArg(n.Attr), strings.Join(placeholders, ", "), classGuard(n.Attr, snap)), nil
 	case "exists":
+		// A cleared attribute keeps its row with a JSON null (attribute.update's
+		// removal form): "is set" skips it, "is not set" counts it.
 		return fmt.Sprintf(`EXISTS (
 			SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
-			WHERE av.card_id = c.id AND ad.name = %s
+			WHERE av.card_id = c.id AND ad.name = %s AND jsonb_typeof(av.value) <> 'null'
 		)`, addArg(n.Attr)), nil
 	case "not exists":
 		return fmt.Sprintf(`NOT EXISTS (
 			SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
-			WHERE av.card_id = c.id AND ad.name = %s
+			WHERE av.card_id = c.id AND ad.name = %s AND jsonb_typeof(av.value) <> 'null'
 		)`, addArg(n.Attr)), nil
 	case "not terminal":
 		// Hide cards whose `<attr>` ref points at a value-card with

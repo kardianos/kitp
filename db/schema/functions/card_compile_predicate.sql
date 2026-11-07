@@ -555,10 +555,12 @@ BEGIN
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
     ELSIF _op = 'exists' THEN
+        -- A cleared attribute keeps its row with a JSON null (attribute.update's
+        -- removal form), so "is set" skips null rows and "is not set" counts them.
         SELECT p, i INTO params, _attr_idx FROM _ph_push(params, to_jsonb(_attr)) AS r(p, i);
         _sql := format(
             'EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
-            'WHERE av.card_id = c.id AND ad.name = ($1->>%s))',
+            'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND jsonb_typeof(av.value) <> ''null'')',
             _attr_idx::text);
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
@@ -566,7 +568,7 @@ BEGIN
         SELECT p, i INTO params, _attr_idx FROM _ph_push(params, to_jsonb(_attr)) AS r(p, i);
         _sql := format(
             'NOT EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
-            'WHERE av.card_id = c.id AND ad.name = ($1->>%s))',
+            'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND jsonb_typeof(av.value) <> ''null'')',
             _attr_idx::text);
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
