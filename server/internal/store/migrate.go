@@ -6,19 +6,18 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/schema/hcsv"
 )
 
-// schemaAdvisoryLock is an arbitrary, stable key for the transaction-scoped
-// advisory lock that serializes schema application. Concurrent boots (multiple
-// replicas, or a MIGRATE_ONLY job racing a serving pod) block here so only one
-// applies at a time; the lock releases automatically on commit/rollback.
-const schemaAdvisoryLock int64 = 0x6b697470 // "kitp"
-
 // ApplySchema brings a database up to the current schema, applied in one
-// serialized transaction:
+// transaction serialized against other appliers of the same schema
+// (lockSchema; another kitp schema in the database applies alongside). The
+// extensions, which every schema in the database shares, are made sure of
+// first, on their own (ensureExtensions). Then:
 //
 //   - The idempotent DDL (CREATE … IF NOT EXISTS) is applied on every boot, so
 //     additive schema changes propagate to existing databases automatically.
@@ -52,14 +51,22 @@ func ApplySchema(ctx context.Context, pool *pgxpool.Pool, opts hcsv.GenerateOpti
 		return fmt.Errorf("load schema: %w", err)
 	}
 
+	// The extensions live in public, one set per database, so they go first in
+	// a short transaction of their own (ensureExtensions); the rest is this
+	// schema's alone.
+	if err := ensureExtensions(ctx, pool, parts.Extensions); err != nil {
+		return err
+	}
+
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin schema tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	// Serialize concurrent appliers for the duration of this transaction.
-	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", schemaAdvisoryLock); err != nil {
+	// Serialize concurrent appliers of this schema for the duration of this
+	// transaction (lockSchema); another schema in the database isn't held up.
+	if err := lockSchema(ctx, tx); err != nil {
 		return fmt.Errorf("acquire schema lock: %w", err)
 	}
 
@@ -108,10 +115,7 @@ func ApplySchema(ctx context.Context, pool *pgxpool.Pool, opts hcsv.GenerateOpti
 				return fmt.Errorf("apply seed: %w", err)
 			}
 		}
-		if _, err := tx.Exec(ctx,
-			"INSERT INTO schema_version (name, version, kind, checksum) VALUES ('baseline', $1, 'baseline', $2)",
-			hcsv.SchemaVersion, checksum(parts.Seed),
-		); err != nil {
+		if err := recordVersion(ctx, tx, "baseline", "baseline", parts.Seed); err != nil {
 			return fmt.Errorf("record baseline: %w", err)
 		}
 	}
@@ -124,9 +128,14 @@ func ApplySchema(ctx context.Context, pool *pgxpool.Pool, opts hcsv.GenerateOpti
 	// row. Ordered + serialized by the advisory lock; a failure rolls back the
 	// whole boot tx.
 	for _, m := range migrations {
+		b := named.New()
+		b.Set("name", m.id)
+		sql, args, err := b.Compile(`SELECT EXISTS(SELECT 1 FROM schema_version WHERE name = :name)`)
+		if err != nil {
+			return fmt.Errorf("read migration %s: compile: %w", m.id, err)
+		}
 		var applied bool
-		if err := tx.QueryRow(ctx,
-			"SELECT EXISTS(SELECT 1 FROM schema_version WHERE name=$1)", m.id).Scan(&applied); err != nil {
+		if err := tx.QueryRow(ctx, sql, args...).Scan(&applied); err != nil {
 			return fmt.Errorf("read migration %s: %w", m.id, err)
 		}
 		if applied {
@@ -135,10 +144,7 @@ func ApplySchema(ctx context.Context, pool *pgxpool.Pool, opts hcsv.GenerateOpti
 		if _, err := tx.Exec(ctx, m.sql); err != nil {
 			return fmt.Errorf("apply migration %s: %w", m.id, err)
 		}
-		if _, err := tx.Exec(ctx,
-			"INSERT INTO schema_version (name, version, kind, checksum) VALUES ($1, $2, 'migration', $3)",
-			m.id, hcsv.SchemaVersion, checksum(m.sql),
-		); err != nil {
+		if err := recordVersion(ctx, tx, m.id, "migration", m.sql); err != nil {
 			return fmt.Errorf("record migration %s: %w", m.id, err)
 		}
 	}
@@ -1657,4 +1663,24 @@ CREATE TABLE IF NOT EXISTS schema_version (
 func checksum(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
+}
+
+// recordVersion adds name's schema_version ledger row: kind is 'baseline' or
+// 'migration', and its checksum is body's.
+func recordVersion(ctx context.Context, tx pgx.Tx, name, kind, body string) error {
+	b := named.New()
+	b.Set("name", name)
+	b.Set("version", hcsv.SchemaVersion)
+	b.Set("kind", kind)
+	b.Set("checksum", checksum(body))
+	sql, args, err := b.Compile(`
+		INSERT INTO schema_version (name, version, kind, checksum)
+		VALUES (:name, :version, :kind, :checksum)`)
+	if err != nil {
+		return fmt.Errorf("compile: %w", err)
+	}
+	if _, err := tx.Exec(ctx, sql, args...); err != nil {
+		return err
+	}
+	return nil
 }

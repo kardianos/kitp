@@ -26,10 +26,7 @@ func TestPool(t testing.TB, schemaName string) *pgxpool.Pool {
 	if !validIdent(schemaName) {
 		t.Fatalf("invalid schema name %q", schemaName)
 	}
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		dsn = "postgres://kitp:kitp@127.0.0.1:5544/kitp?sslmode=disable"
-	}
+	dsn := testDSN()
 
 	ctx := context.Background()
 
@@ -82,10 +79,7 @@ func TestPoolBare(t *testing.T, schemaName string) *pgxpool.Pool {
 	if !validIdent(schemaName) {
 		t.Fatalf("invalid schema name %q", schemaName)
 	}
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		dsn = "postgres://kitp:kitp@127.0.0.1:5544/kitp?sslmode=disable"
-	}
+	dsn := testDSN()
 	ctx := context.Background()
 
 	bootstrap, err := pgxpool.New(ctx, dsn)
@@ -148,6 +142,15 @@ func TemplateStatusID(t testing.TB, pool *pgxpool.Pool, projectID int64, title s
 		t.Fatalf("template status %q under project %d: %v", title, projectID, err)
 	}
 	return id
+}
+
+// testDSN is the database the test pools make their schemas in: DATABASE_URL,
+// else the dev database.
+func testDSN() string {
+	if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
+		return dsn
+	}
+	return "postgres://kitp:kitp@127.0.0.1:5544/kitp?sslmode=disable"
 }
 
 func registerCleanup(t testing.TB, pool *pgxpool.Pool, dsn, schemaName string) {

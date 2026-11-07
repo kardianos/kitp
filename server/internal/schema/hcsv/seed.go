@@ -104,6 +104,10 @@ type Parts struct {
 	// bundle's source project is re-materialised whenever its checksum
 	// changes; presets are upserted every boot.
 	Bundles Catalog
+	// Extensions are the extensions DDL creates (in public, so one set per
+	// database however many kitp schemas it holds); store.ApplySchema makes
+	// sure of them first, on their own.
+	Extensions []string
 }
 
 // GenerateParts renders the schema as its component sections. GenerateAll
@@ -132,7 +136,7 @@ func GenerateParts(opts GenerateOptions) (Parts, error) {
 	if err != nil {
 		return Parts{}, err
 	}
-	p := Parts{DDL: GenerateSQL(schema), Seed: seedSQL, Bundles: cat}
+	p := Parts{DDL: GenerateSQL(schema), Extensions: schema.Extensions, Seed: seedSQL, Bundles: cat}
 	if opts.Demo {
 		path := demoPath
 		if opts.DemoPath != "" {
