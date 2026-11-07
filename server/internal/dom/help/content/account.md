@@ -8,15 +8,15 @@ Each subscription picks which events and tasks to include and how often to send 
 
 ## Calendars
 
-A calendar shows the tasks **you can see** that have a due date in a window around today, as all-day events that link to the task. Make as many as you like — say *My due dates* (assigned to me) and *Releases* (one project).
+A calendar shows the tasks **you can see** that have a due date in a window around today, as all-day events that link to the task. A task with a start date too spans its days, from the start to the due date; a task with a start date but no due date isn't listed. Make as many as you like — say *My due dates* (assigned to me) and *Releases* (one project).
 
 | Setting | What it does |
 | ------- | ------------ |
 | **Name** | What calendar apps call it. |
 | **Tasks** | *Every task I can see*, *Assigned to me*, *Assigned to me, not done*, or a custom filter (the screen-filter JSON, where `"@me"` is you). Status values differ per project, so to span projects filter on phase (`has_phase` with `triage` / `active`). |
-| **Days back / Days ahead** | The window: due dates from this many days ago to this many days ahead (0–3650; defaults 30 and 365). |
+| **Days back / Days ahead** | The window: tasks whose days fall between this many days ago and this many days ahead (0–3650; defaults 30 and 365) — a long task running through the window counts. |
 
-Each event's title is `#123 Title` (✓ in front once the task is done); its description names the project and status and links to the task. Events are marked *free*, so due dates don't block your day.
+Each event's title is `#123 Title` (✓ in front once the task is done); its description names the project and status and links to the task. Events are marked *free*, so tasks don't block your day.
 
 ### URLs
 

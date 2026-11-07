@@ -136,7 +136,7 @@ Package: `server/internal/isodate`. SQL helpers:
 |---|---|---|
 | `attribute.update` on a `date` attribute (`due_date`) | stored as given | not a valid date → `validation` |
 | `card.insert` attributes of type `date` (also CSV import commit, MCP) | stored as given | same |
-| CSV import | had no date column | a new `due_date` target, YYYY-MM-DD only: the preview lists each bad row, the commit refuses it |
+| CSV import | had no date column | a new `due_date` target, YYYY-MM-DD only: the preview lists each bad row, the commit refuses it; a `start_date` target likewise (docs/TIMELINE_AND_CALENDAR.md), with a row whose start is after its due date listed and refused the same way |
 | `activity.select` `from_date` / `to_date` | lenient `::date`; bad → silently unset | strict date; bad → `validation` |
 | `comm_log.list` `since` | lenient `::timestamptz`; bad → the batch errors | strict RFC 3339; bad → `validation` |
 | `user_token.create` `expires_at` | lenient `::timestamptz` (accepted `infinity`) | strict RFC 3339 |
@@ -536,15 +536,21 @@ owner person → user account (none / disabled → 404). One query:
 ```
 tasks, not deleted, visible to the owner (schema.VisibilityClause — off
 areas included), matching the calendar's predicate (card.CompileTree,
-@me = the owner), with
+@me = the owner), whose days overlap the window:
   av.attribute_def_id = <due_date> AND av.value_type_id < 50
-  AND av.value >= to_jsonb(<from>::text) AND av.value <= to_jsonb(<to>::text)
+  AND av.value >= to_jsonb(<from>::text)
+  AND COALESCE(<start_date>, av.value) <= to_jsonb(<to>::text)
 ```
 
-The literal `value_type_id < 50` matches the partial index
-`attribute_value_def_value (attribute_def_id, value) WHERE value_type_id
-< 50` (scalars only, since migration 0034), so the range is an index scan;
-ISO date strings sort in date order. At most 5000 events.
+A task is listed when it is due on or after the window's first day and
+starts (with no `start_date`, is due) on or before its last, so a long
+task running right through the window is listed too
+(docs/TIMELINE_AND_CALENDAR.md). A task with a start date but no due date
+has no end and is left out: this is a feed of due dates. The literal
+`value_type_id < 50` matches the partial index `attribute_value_def_value
+(attribute_def_id, value) WHERE value_type_id < 50` (scalars only, since
+migration 0034), so the due-date bound is an index scan; ISO date strings
+sort in date order. At most 5000 events.
 
 Each event (`text/calendar`, CRLF, lines folded at 75 octets, TEXT
 escaped):
@@ -552,12 +558,16 @@ escaped):
 ```
 UID:task-<id>@<host>
 DTSTAMP:<now UTC>
-DTSTART;VALUE=DATE:<due>          DTEND;VALUE=DATE:<due + 1 day>
+DTSTART;VALUE=DATE:<start, else due>   DTEND;VALUE=DATE:<due + 1 day>
 SUMMARY:#<id> <title>             (✓ in front when its status is in a terminal phase)
 URL:<base>/task/<id>
 DESCRIPTION:<project> · <status>\n<base>/task/<id>
 TRANSP:TRANSPARENT
 ```
+
+A task with both dates is one all-day event across its days (DTEND is
+exclusive for a DATE value, hence the day after the due date); one with
+only a due date is a one-day event.
 
 Calendar: `X-WR-CALNAME:<title>`, `REFRESH-INTERVAL;VALUE=DURATION:PT1H`,
 `X-PUBLISHED-TTL:PT1H`. `<base>` = `KITP_PUBLIC_URL`, else the request's

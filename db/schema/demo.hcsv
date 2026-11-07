@@ -95,12 +95,12 @@ card_type_id, title
 $card_type.project, "Default Project"
 
 
-## table card | under=proj_default | doc="Milestones."
+## table card | under=proj_default | doc="Milestones, each with a due date (the milestone binding of due_date, migration 0047) so the Timeline and Calendar show them."
 ### rows
-card_type_id, parent_card_id, title, alias
-$card_type.milestone, parent, "M1", m_m1
-$card_type.milestone, parent, "M2", m_m2
-$card_type.milestone, parent, "M3", m_m3
+card_type_id, parent_card_id, title, due_date,     alias
+$card_type.milestone, parent, "M1",  "2026-11-20", m_m1
+$card_type.milestone, parent, "M2",  "2026-12-11", m_m2
+$card_type.milestone, parent, "M3",  "2027-01-15", m_m3
 
 
 ## table card | under=proj_default | doc="Components."
@@ -188,43 +188,43 @@ card_type_id,      parent_card_id, title,   layout, slug,  hotkey, sort_order, f
 $card_type.screen, parent,         "Comms", comms,  comms, c,      7,          @flow_comm,  @cs_open,              sc_comms, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"active","label":"Active","predicate":{"attr":"comm_status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Resolved","predicate":{"attr":"comm_status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
 
 
-## table card | under=proj_default | doc="25 dense tasks. status is round-robin so every state has at least a few rows; 'Closed:'-prefixed titles force Done so a manually-curated terminal example survives the rotation. sort_order is task_idx * 100 (the loader can't compute that, so each row carries its literal value). due_date is the demo-only non-built-in attribute defined above; a mix of past, today-ish, and future ISO dates exercises overdue / upcoming display."
+## table card | under=proj_default | doc="25 dense tasks. status is round-robin so every state has at least a few rows; 'Closed:'-prefixed titles force Done so a manually-curated terminal example survives the rotation. sort_order is task_idx * 100 (the loader can't compute that, so each row carries its literal value). start_date / due_date sit around November–December 2026 (a few past, most in the following weeks, one long span into January, one single-day span, start-only and undated rows) so overdue / upcoming display and the Calendar and Timeline layouts have spans, points and an Unscheduled tray to show."
 ### rows
-card_type_id,    parent_card_id, title,                       status,    assignee,             milestone_ref, component_ref, tags,                                 description,                                                                              sort_order, due_date
-$card_type.task, parent,         "Wire pickers (dense#1)",    @s_todo,   $user_account.alice,  @m_m1,         @c_fe,         `[@t_pri_high]`,                       "Replace ad-hoc pickers in the dense table with the shared component.",                   700,        "2026-05-20"
-$card_type.task, parent,         "API rate limits",           @s_doing,  $user_account.alice,  @m_m1,         @c_be,         `[@t_pri_high, @t_area_be]`,           "Cap per-IP request rate at the gateway and return a structured 429 with retry-after.",   800,        "2026-05-18"
-$card_type.task, parent,         "Empty state copy",          @s_review, $user_account.bob,    @m_m1,         @c_fe,         `[@t_pri_med]`,                        "Rewrite the empty-state strings on Projects, Inbox, and Grid to match the voice guide.", 900,        "2026-05-10"
-$card_type.task, parent,         "Connection pool tuning",    @s_doing,  $user_account.bob,    @m_m2,         @c_db,         `[@t_pri_low]`,                        null,                                                                                      1000,       null
-$card_type.task, parent,         "OIDC callback URL",         @s_todo,   $user_account.carol,  @m_m2,         @c_auth,       `[@t_pri_high]`,                       "Allow the redirect URL to be configured per environment without rebuilding the client.", 1100,       "2026-06-01"
-$card_type.task, parent,         "Triage backlog",            @s_review, $user_account.dave,   null,          null,          `[@t_pri_med]`,                        null,                                                                                      1200,       "2026-05-15"
-$card_type.task, parent,         "Onboarding checklist v2",   @s_done,   $user_account.eve,    @m_m3,         @c_ui,         `[@t_pri_low, @t_team_grow]`,          null,                                                                                      1300,       null
-$card_type.task, parent,         "Theme tokens",              @s_doing,  $user_account.alice,  @m_m2,         @c_fe,         `[@t_pri_high, @t_team_prod]`,         null,                                                                                      1400,       "2026-05-25"
-$card_type.task, parent,         "Activity feed pagination",  @s_todo,   $user_account.alice,  @m_m1,         @c_be,         `[@t_pri_high]`,                       "Page the activity stream by activity id so older comments load on demand.",             1500,       "2026-06-15"
-$card_type.task, parent,         "Read replica failover",     @s_doing,  $user_account.bob,    @m_m2,         @c_db,         `[@t_pri_med, @t_area_be]`,            null,                                                                                      1600,       "2026-05-30"
-$card_type.task, parent,         "Component editor refactor", @s_review, $user_account.carol,  @m_m2,         @c_fe,         `[@t_pri_high, @t_area_fe]`,           "Split the component editor into a header/body pair and isolate the autosave timer.",    1700,       "2026-07-01"
-$card_type.task, parent,         "JWKS cache",                @s_todo,   $user_account.dave,   @m_m3,         @c_auth,       `[@t_pri_med]`,                        "Cache the OP's JWKS for an hour with stale-while-revalidate on signature failures.",     1800,       "2026-06-10"
-$card_type.task, parent,         "Onboarding analytics",      @s_doing,  $user_account.eve,    @m_m1,         @c_ui,         `[@t_team_grow]`,                      null,                                                                                      1900,       null
-$card_type.task, parent,         "Audit log retention",       @s_done,   $user_account.alice,  null,          null,          `[@t_pri_low, @t_team_prod]`,          null,                                                                                      2000,       null
-$card_type.task, parent,         "Empty grid placeholder",    @s_todo,   $user_account.alice,  @m_m3,         @c_fe,         `[@t_pri_med]`,                        null,                                                                                      2100,       "2026-06-05"
-$card_type.task, parent,         "Idempotency-Key store",     @s_doing,  $user_account.bob,    @m_m2,         @c_be,         `[@t_pri_high]`,                       "Persist responses keyed by (user, key) for 24h and replay on duplicate submission.",     2200,       "2026-05-28"
-$card_type.task, parent,         "Schema migration runner",   @s_review, $user_account.carol,  @m_m3,         @c_db,         `[@t_pri_low, @t_area_be]`,            "Tighten the migration runner: per-file transactions, lock to serialise concurrent boots.", 2300,     null
-$card_type.task, parent,         "PKCE refresh",              @s_todo,   $user_account.dave,   @m_m1,         @c_auth,       `[@t_pri_high, @t_team_plat]`,         null,                                                                                      2400,       "2026-05-22"
-$card_type.task, parent,         "Kanban swim lane DnD",      @s_doing,  $user_account.eve,    @m_m2,         @c_ui,         `[@t_pri_med]`,                        "Drag-drop across both column and lane should issue exactly one batch with two attribute writes.", 2500, "2026-06-20"
-$card_type.task, parent,         "Set up CI cache",           @s_done,   $user_account.alice,  @m_m1,         @c_fe,         `[@t_pri_high, @t_team_plat]`,         null,                                                                                      2600,       null
-$card_type.task, parent,         "Migrate to pgx v5",         @s_todo,   $user_account.alice,  @m_m2,         @c_be,         `[@t_pri_high]`,                       null,                                                                                      2700,       "2026-07-15"
-$card_type.task, parent,         "Bigserial primary keys",    @s_doing,  $user_account.bob,    @m_m1,         @c_db,         `[@t_pri_med]`,                        null,                                                                                      2800,       null
-$card_type.task, parent,         "Repo bootstrap docs",       @s_review, $user_account.carol,  @m_m3,         null,          `[@t_pri_med]`,                        null,                                                                                      2900,       "2026-05-12"
-$card_type.task, parent,         "Linter rule for INSERT",    @s_cancel, $user_account.dave,   @m_m2,         null,          `[@t_pri_low, @t_team_plat]`,          null,                                                                                      3000,       null
-$card_type.task, parent,         "Closed: dispatcher MVP",    @s_done,   $user_account.carol,  null,          @c_ui,         `[]`,                                  null,                                                                                      3100,       null
+card_type_id,    parent_card_id, title,                       status,    assignee,             milestone_ref, component_ref, tags,                                 description,                                                                              sort_order, start_date,   due_date
+$card_type.task, parent,         "Wire pickers (dense#1)",    @s_todo,   $user_account.alice,  @m_m1,         @c_fe,         `[@t_pri_high]`,                       "Replace ad-hoc pickers in the dense table with the shared component.",                   700, "2026-11-02", "2026-11-06"
+$card_type.task, parent,         "API rate limits",           @s_doing,  $user_account.alice,  @m_m1,         @c_be,         `[@t_pri_high, @t_area_be]`,           "Cap per-IP request rate at the gateway and return a structured 429 with retry-after.",   800, "2026-11-04", "2026-11-12"
+$card_type.task, parent,         "Empty state copy",          @s_review, $user_account.bob,    @m_m1,         @c_fe,         `[@t_pri_med]`,                        "Rewrite the empty-state strings on Projects, Inbox, and Grid to match the voice guide.", 900, null,         "2026-11-09"
+$card_type.task, parent,         "Connection pool tuning",    @s_doing,  $user_account.bob,    @m_m2,         @c_db,         `[@t_pri_low]`,                        null,                                                                                      1000, "2026-11-09", "2026-11-20"
+$card_type.task, parent,         "OIDC callback URL",         @s_todo,   $user_account.carol,  @m_m2,         @c_auth,       `[@t_pri_high]`,                       "Allow the redirect URL to be configured per environment without rebuilding the client.", 1100, "2026-11-10", "2026-11-13"
+$card_type.task, parent,         "Triage backlog",            @s_review, $user_account.dave,   null,          null,          `[@t_pri_med]`,                        null,                                                                                      1200, null,         "2026-11-07"
+$card_type.task, parent,         "Onboarding checklist v2",   @s_done,   $user_account.eve,    @m_m3,         @c_ui,         `[@t_pri_low, @t_team_grow]`,          null,                                                                                      1300, "2026-11-16", null
+$card_type.task, parent,         "Theme tokens",              @s_doing,  $user_account.alice,  @m_m2,         @c_fe,         `[@t_pri_high, @t_team_prod]`,         null,                                                                                      1400, "2026-10-26", "2026-11-06"
+$card_type.task, parent,         "Activity feed pagination",  @s_todo,   $user_account.alice,  @m_m1,         @c_be,         `[@t_pri_high]`,                       "Page the activity stream by activity id so older comments load on demand.",             1500, "2026-11-16", "2026-11-25"
+$card_type.task, parent,         "Read replica failover",     @s_doing,  $user_account.bob,    @m_m2,         @c_db,         `[@t_pri_med, @t_area_be]`,            null,                                                                                      1600, "2026-11-23", "2026-12-04"
+$card_type.task, parent,         "Component editor refactor", @s_review, $user_account.carol,  @m_m2,         @c_fe,         `[@t_pri_high, @t_area_fe]`,           "Split the component editor into a header/body pair and isolate the autosave timer.",    1700, "2026-11-30", "2026-12-18"
+$card_type.task, parent,         "JWKS cache",                @s_todo,   $user_account.dave,   @m_m3,         @c_auth,       `[@t_pri_med]`,                        "Cache the OP's JWKS for an hour with stale-while-revalidate on signature failures.",     1800, "2026-11-11", "2026-11-11"
+$card_type.task, parent,         "Onboarding analytics",      @s_doing,  $user_account.eve,    @m_m1,         @c_ui,         `[@t_team_grow]`,                      null,                                                                                      1900, null,         null
+$card_type.task, parent,         "Audit log retention",       @s_done,   $user_account.alice,  null,          null,          `[@t_pri_low, @t_team_prod]`,          null,                                                                                      2000, null,         "2026-11-24"
+$card_type.task, parent,         "Empty grid placeholder",    @s_todo,   $user_account.alice,  @m_m3,         @c_fe,         `[@t_pri_med]`,                        null,                                                                                      2100, "2026-11-17", "2026-11-19"
+$card_type.task, parent,         "Idempotency-Key store",     @s_doing,  $user_account.bob,    @m_m2,         @c_be,         `[@t_pri_high]`,                       "Persist responses keyed by (user, key) for 24h and replay on duplicate submission.",     2200, "2026-11-05", "2026-11-14"
+$card_type.task, parent,         "Schema migration runner",   @s_review, $user_account.carol,  @m_m3,         @c_db,         `[@t_pri_low, @t_area_be]`,            "Tighten the migration runner: per-file transactions, lock to serialise concurrent boots.", 2300, "2026-12-01", "2026-12-11"
+$card_type.task, parent,         "PKCE refresh",              @s_todo,   $user_account.dave,   @m_m1,         @c_auth,       `[@t_pri_high, @t_team_plat]`,         null,                                                                                      2400, null,         "2026-11-18"
+$card_type.task, parent,         "Kanban swim lane DnD",      @s_doing,  $user_account.eve,    @m_m2,         @c_ui,         `[@t_pri_med]`,                        "Drag-drop across both column and lane should issue exactly one batch with two attribute writes.", 2500, "2026-11-26", "2026-12-09"
+$card_type.task, parent,         "Set up CI cache",           @s_done,   $user_account.alice,  @m_m1,         @c_fe,         `[@t_pri_high, @t_team_plat]`,         null,                                                                                      2600, null,         null
+$card_type.task, parent,         "Migrate to pgx v5",         @s_todo,   $user_account.alice,  @m_m2,         @c_be,         `[@t_pri_high]`,                       null,                                                                                      2700, "2026-10-19", "2027-01-15"
+$card_type.task, parent,         "Bigserial primary keys",    @s_doing,  $user_account.bob,    @m_m1,         @c_db,         `[@t_pri_med]`,                        null,                                                                                      2800, null,         "2026-12-15"
+$card_type.task, parent,         "Repo bootstrap docs",       @s_review, $user_account.carol,  @m_m3,         null,          `[@t_pri_med]`,                        null,                                                                                      2900, "2026-10-28", "2026-11-03"
+$card_type.task, parent,         "Linter rule for INSERT",    @s_cancel, $user_account.dave,   @m_m2,         null,          `[@t_pri_low, @t_team_plat]`,          null,                                                                                      3000, null,         null
+$card_type.task, parent,         "Closed: dispatcher MVP",    @s_done,   $user_account.carol,  null,          @c_ui,         `[]`,                                  null,                                                                                      3100, "2026-10-12", "2026-10-23"
 
 
 ## table card | under=proj_default | doc="Task-relations demo. Four tasks demonstrate the parent_task/parent_relationship pair: 'Auth rewrite' is a standalone head task; the next three reference it via parent_task with three different relationship tags (subtask / blocker / related). The 'Head tasks' filter on the grid uses (parent_task not exists OR parent_task has_phase terminal) so these children stay hidden until their parent reaches Done/Cancelled — that's the canonical 'current head tasks only' view."
 ### rows
-card_type_id,    parent_card_id, title,                        status,   assignee,             parent_task,      parent_relationship, sort_order, alias
-$card_type.task, parent,         "Auth rewrite",               @s_doing, $user_account.alice,  null,             null,                50,         t_auth_root
-$card_type.task, parent,         "Migrate session storage",    @s_todo,  $user_account.bob,    @t_auth_root,     subtask,             60,         t_auth_session
-$card_type.task, parent,         "JWKS validation blocker",    @s_doing, $user_account.dave,   @t_auth_root,     blocker,             70,         t_auth_jwks
-$card_type.task, parent,         "Audit-log review (related)", @s_review,$user_account.carol,  @t_auth_root,     related,             80,         t_auth_audit
+card_type_id,    parent_card_id, title,                        status,   assignee,             parent_task,      parent_relationship, sort_order, start_date,   due_date,     alias
+$card_type.task, parent,         "Auth rewrite",               @s_doing, $user_account.alice,  null,             null,                50,         "2026-11-09",  "2026-12-04", t_auth_root
+$card_type.task, parent,         "Migrate session storage",    @s_todo,  $user_account.bob,    @t_auth_root,     subtask,             60,         "2026-11-16",  "2026-11-27", t_auth_session
+$card_type.task, parent,         "JWKS validation blocker",    @s_doing, $user_account.dave,   @t_auth_root,     blocker,             70,         "2026-11-09",  "2026-11-13", t_auth_jwks
+$card_type.task, parent,         "Audit-log review (related)", @s_review,$user_account.carol,  @t_auth_root,     related,             80,         null,          null,         t_auth_audit
 
 
 -- Screens + their default filters. The screen→default_filter wiring
@@ -325,9 +325,9 @@ $card_type.project, "Mobile App"
 
 ## table card | under=proj_mobile | doc="Mobile App milestones — coarser than Default Project's three so 'group by milestone' looks different across the two projects."
 ### rows
-card_type_id, parent_card_id, title, alias
-$card_type.milestone, parent, "MVP",  mob_m_mvp
-$card_type.milestone, parent, "v1.1", mob_m_v11
+card_type_id, parent_card_id, title,  due_date,     alias
+$card_type.milestone, parent, "MVP",  "2026-11-27", mob_m_mvp
+$card_type.milestone, parent, "v1.1", "2026-12-18", mob_m_v11
 
 
 ## table card | under=proj_mobile | doc="Mobile App components — platform-split is the obvious axis for a mobile app, distinct from Default Project's frontend / backend / db split."
@@ -411,15 +411,15 @@ $card_type.screen, parent,         "Comms", comms,  comms, 7,          @mob_flow
 
 ## table card | under=proj_mobile | doc="Mobile App tasks. Smaller fixture than Default Project (8 tasks vs ~29) — variety more than density. status round-robin so every active state has at least one row; a closed task survives the rotation for terminal-state coverage."
 ### rows
-card_type_id,    parent_card_id, title,                       status,         assignee,             milestone_ref, component_ref, tags,                                          description,                                                                              sort_order, due_date
-$card_type.task, parent,         "Push notification setup",   @mob_s_doing,   $user_account.alice,  @mob_m_mvp,    @mob_c_ios,    `[@mob_t_pri_high, @mob_t_plat_ios]`,          "Wire APNs token registration on cold-start; refresh on app foreground.",                  100,        "2026-06-01"
-$card_type.task, parent,         "FCM token registration",    @mob_s_doing,   $user_account.bob,    @mob_m_mvp,    @mob_c_and,    `[@mob_t_pri_high, @mob_t_plat_and]`,          "Symmetric Android-side FCM registration; keep the wire shape identical to APNs.",         200,        "2026-06-01"
-$card_type.task, parent,         "Onboarding flow",           @mob_s_review,  $user_account.carol,  @mob_m_mvp,    @mob_c_shared, `[@mob_t_pri_high]`,                            "Three-screen onboarding, shared between iOS and Android via the shared module.",          300,        "2026-05-25"
-$card_type.task, parent,         "Settings persistence",      @mob_s_todo,    $user_account.dave,   @mob_m_mvp,    @mob_c_shared, `[@mob_t_pri_low]`,                             null,                                                                                      400,        null
-$card_type.task, parent,         "Dark-mode polish",          @mob_s_todo,    $user_account.eve,    @mob_m_v11,    @mob_c_ios,    `[@mob_t_plat_ios, @mob_t_pri_low]`,           "Pass through all screens, ensure contrast on the secondary text and surfaces.",           500,        "2026-07-10"
-$card_type.task, parent,         "Camera permission UX",      @mob_s_new_idea,$user_account.alice,  @mob_m_v11,    @mob_c_shared, `[@mob_t_pri_low]`,                             "Pre-prompt sheet explaining why camera is needed, then OS prompt only on yes.",           600,        null
-$card_type.task, parent,         "App icon refresh",          @mob_s_done,    $user_account.bob,    @mob_m_mvp,    @mob_c_shared, `[]`,                                          null,                                                                                      700,        null
-$card_type.task, parent,         "Closed: prototype review",  @mob_s_cancel,  $user_account.carol,  null,          null,          `[]`,                                          null,                                                                                      800,        null
+card_type_id,    parent_card_id, title,                       status,         assignee,             milestone_ref, component_ref, tags,                                          description,                                                                              sort_order, start_date,   due_date
+$card_type.task, parent,         "Push notification setup",   @mob_s_doing,   $user_account.alice,  @mob_m_mvp,    @mob_c_ios,    `[@mob_t_pri_high, @mob_t_plat_ios]`,          "Wire APNs token registration on cold-start; refresh on app foreground.",                  100, "2026-11-09", "2026-11-20"
+$card_type.task, parent,         "FCM token registration",    @mob_s_doing,   $user_account.bob,    @mob_m_mvp,    @mob_c_and,    `[@mob_t_pri_high, @mob_t_plat_and]`,          "Symmetric Android-side FCM registration; keep the wire shape identical to APNs.",         200, "2026-11-09", "2026-11-12"
+$card_type.task, parent,         "Onboarding flow",           @mob_s_review,  $user_account.carol,  @mob_m_mvp,    @mob_c_shared, `[@mob_t_pri_high]`,                            "Three-screen onboarding, shared between iOS and Android via the shared module.",          300, "2026-11-02", "2026-11-13"
+$card_type.task, parent,         "Settings persistence",      @mob_s_todo,    $user_account.dave,   @mob_m_mvp,    @mob_c_shared, `[@mob_t_pri_low]`,                             null,                                                                                      400, null,         "2026-11-19"
+$card_type.task, parent,         "Dark-mode polish",          @mob_s_todo,    $user_account.eve,    @mob_m_v11,    @mob_c_ios,    `[@mob_t_plat_ios, @mob_t_pri_low]`,           "Pass through all screens, ensure contrast on the secondary text and surfaces.",           500, "2026-11-30", "2026-12-11"
+$card_type.task, parent,         "Camera permission UX",      @mob_s_new_idea,$user_account.alice,  @mob_m_v11,    @mob_c_shared, `[@mob_t_pri_low]`,                             "Pre-prompt sheet explaining why camera is needed, then OS prompt only on yes.",           600, "2026-12-07", null
+$card_type.task, parent,         "App icon refresh",          @mob_s_done,    $user_account.bob,    @mob_m_mvp,    @mob_c_shared, `[]`,                                          null,                                                                                      700, null,         null
+$card_type.task, parent,         "Closed: prototype review",  @mob_s_cancel,  $user_account.carol,  null,          null,          `[]`,                                          null,                                                                                      800, "2026-10-19", "2026-10-30"
 
 
 ## table card | under=proj_mobile | doc="Mobile App Inbox screen. No hotkey set — Default Project already claims the single-letter screen keys (i / g / k); Mobile App reaches its screens via the project picker + click. Symmetry across the two projects rather than chord collisions."

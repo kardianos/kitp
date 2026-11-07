@@ -75,7 +75,10 @@ type calendarRef struct {
 }
 
 type event struct {
-	taskID   int64
+	taskID int64
+	// start is the task's start date, the zero time when it has none: a
+	// task with both dates is one all-day event across its days.
+	start    time.Time
 	due      time.Time
 	title    string
 	project  string
@@ -166,10 +169,14 @@ func (f *feed) lookup(ctx context.Context, token string) (calendarRef, bool, err
 }
 
 // events is the one query: tasks the owner can see (DI-6, off areas
-// included), matching the calendar's filter, due in the window. The range
-// is on the (attribute_def_id, value) btree — the literal value_type_id
-// band matches the partial index's predicate, and ISO dates sort in date
-// order (every stored date is YYYY-MM-DD; see §1).
+// included), matching the calendar's filter, whose days overlap the
+// window — due on or after its first day, and started (or, with no start
+// date, due) on or before its last, so a long task running through the
+// window is listed. A task with a start date but no due date has no end
+// and is left out: this is a feed of due dates. The due-date bound is on
+// the (attribute_def_id, value) btree — the literal value_type_id band
+// matches the partial index's predicate, and ISO dates sort in date order
+// (every stored date is YYYY-MM-DD; see §1).
 func (f *feed) events(ctx context.Context, ref calendarRef) ([]event, error) {
 	today := f.Now().UTC().Truncate(24 * time.Hour)
 	from := today.AddDate(0, 0, -ref.pastDays).Format("2006-01-02")
@@ -200,7 +207,7 @@ func (f *feed) events(ctx context.Context, ref calendarRef) ([]event, error) {
 	b.Set("to", to)
 	b.Set("limit", MaxEvents)
 	sql, args, err := b.Compile(`
-		SELECT c.id, av.value #>> '{}',
+		SELECT c.id, COALESCE(sa.value #>> '{}', ''), av.value #>> '{}',
 		       COALESCE((SELECT t.value #>> '{}' FROM attribute_value t WHERE t.card_id = c.id
 		                 AND t.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'title')), ''),
 		       COALESCE((SELECT pt.value #>> '{}' FROM attribute_value pt WHERE pt.card_id = card_enclosing_project(c.id)
@@ -217,12 +224,15 @@ func (f *feed) events(ctx context.Context, ref calendarRef) ([]event, error) {
 			WHERE sv.card_id = c.id AND jsonb_typeof(sv.value) = 'number'
 			  AND sv.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'status')
 		) st ON true
+		LEFT JOIN attribute_value sa ON sa.card_id = c.id AND jsonb_typeof(sa.value) = 'string'
+		  AND sa.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'start_date')
 		WHERE av.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'due_date')
 		  AND av.value_type_id < 50
-		  AND av.value >= to_jsonb(:from::text) AND av.value <= to_jsonb(:to::text)
+		  AND av.value >= to_jsonb(:from::text)
+		  AND COALESCE(sa.value, av.value) <= to_jsonb(:to::text)
 		  AND ` + schema.VisibilityClause("c.id", ":user") + `
 		  AND (` + filter + `)
-		ORDER BY av.value, c.id
+		ORDER BY COALESCE(sa.value, av.value), av.value, c.id
 		LIMIT :limit`)
 	if err != nil {
 		return nil, fmt.Errorf("compile: %w", err)
@@ -235,8 +245,8 @@ func (f *feed) events(ctx context.Context, ref calendarRef) ([]event, error) {
 	var out []event
 	for rows.Next() {
 		var e event
-		var due string
-		if err := rows.Scan(&e.taskID, &due, &e.title, &e.project, &e.status, &e.terminal, &e.modified); err != nil {
+		var start, due string
+		if err := rows.Scan(&e.taskID, &start, &due, &e.title, &e.project, &e.status, &e.terminal, &e.modified); err != nil {
 			return nil, err
 		}
 		t, err := time.Parse("2006-01-02", due)
@@ -244,6 +254,13 @@ func (f *feed) events(ctx context.Context, ref calendarRef) ([]event, error) {
 			continue // not a stored-form date; migration 0023 cleared these
 		}
 		e.due = t
+		if start != "" {
+			// A start that isn't a stored-form date (or, against T8, after
+			// the due date) leaves a one-day event on the due date.
+			if s, err := time.Parse("2006-01-02", start); err == nil && !s.After(t) {
+				e.start = s
+			}
+		}
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -372,7 +389,12 @@ func (f *feed) render(r *http.Request, ref calendarRef, evs []event) string {
 		w.prop("UID", fmt.Sprintf("task-%d@%s", e.taskID, host))
 		w.prop("DTSTAMP", now)
 		w.prop("LAST-MODIFIED", icsStamp(e.modified))
-		w.prop("DTSTART;VALUE=DATE", icsDate(e.due))
+		// DTEND is exclusive for a DATE value: the day after the due date.
+		first := e.due
+		if !e.start.IsZero() {
+			first = e.start
+		}
+		w.prop("DTSTART;VALUE=DATE", icsDate(first))
 		w.prop("DTEND;VALUE=DATE", icsDate(e.due.AddDate(0, 0, 1)))
 		w.text("SUMMARY", summary)
 		w.text("DESCRIPTION", desc)

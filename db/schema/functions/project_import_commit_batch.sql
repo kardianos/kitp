@@ -77,8 +77,10 @@ DECLARE
     _col_idx_description int;
     _col_idx_sort int;
     _col_idx_due int;
+    _col_idx_start int;
     _allowed_targets text[] := ARRAY['id','title','assignee_email','assignee_name',
-                                     'milestone','component','tags','description','sort_order','due_date'];
+                                     'milestone','component','tags','description','sort_order','due_date',
+                                     'start_date'];
     _hdr_pos int;
     _header_name text;
     _target text;
@@ -110,6 +112,7 @@ DECLARE
     _tp_description text;
     _tp_sort_order text;
     _tp_due_date text;
+    _tp_start_date text;
     _tp_assignee_email text;
     _tp_assignee_name text;
     _tp_milestone_title text;
@@ -272,6 +275,7 @@ BEGIN
         _col_idx_description := -1;
         _col_idx_sort := -1;
         _col_idx_due := -1;
+        _col_idx_start := -1;
         _hdr_pos := 0;
         FOR _header_name IN SELECT v #>> '{}' FROM jsonb_array_elements(_header) AS v
         LOOP
@@ -291,6 +295,7 @@ BEGIN
                 WHEN 'description' THEN _col_idx_description := _hdr_pos;
                 WHEN 'sort_order' THEN _col_idx_sort := _hdr_pos;
                 WHEN 'due_date' THEN _col_idx_due := _hdr_pos;
+                WHEN 'start_date' THEN _col_idx_start := _hdr_pos;
                 ELSE NULL;
             END CASE;
             _hdr_pos := _hdr_pos + 1;
@@ -321,6 +326,7 @@ BEGIN
             _tp_description := '';
             _tp_sort_order := '';
             _tp_due_date := '';
+            _tp_start_date := '';
             _tp_assignee_email := '';
             _tp_assignee_name := '';
             _tp_milestone_title := '';
@@ -457,7 +463,8 @@ BEGIN
                 _tp_description := COALESCE(_row->>_col_idx_description, '');
             END IF;
 
-            -- due_date: YYYY-MM-DD only
+            -- due_date / start_date: YYYY-MM-DD only, and the start not
+            -- after the due date (docs/TIMELINE_AND_CALENDAR.md T8).
             IF _col_idx_due >= 0 THEN
                 _v := btrim(COALESCE(_row->>_col_idx_due, ''));
                 IF _v <> '' THEN
@@ -469,6 +476,23 @@ BEGIN
                             format('row %s: due_date "%s" is not a date (YYYY-MM-DD)', _row_num, _v));
                     END IF;
                 END IF;
+            END IF;
+            IF _col_idx_start >= 0 THEN
+                _v := btrim(COALESCE(_row->>_col_idx_start, ''));
+                IF _v <> '' THEN
+                    IF iso_date_ok(_v) THEN
+                        _tp_start_date := _v;
+                    ELSE
+                        _had_errors := true;
+                        _first_err_msg := COALESCE(_first_err_msg,
+                            format('row %s: start_date "%s" is not a date (YYYY-MM-DD)', _row_num, _v));
+                    END IF;
+                END IF;
+            END IF;
+            IF date_order_problem(NULLIF(_tp_start_date, ''), NULLIF(_tp_due_date, '')) IS NOT NULL THEN
+                _had_errors := true;
+                _first_err_msg := COALESCE(_first_err_msg,
+                    format('row %s: %s', _row_num, date_order_problem(_tp_start_date, _tp_due_date)));
             END IF;
 
             -- sort_order
@@ -495,6 +519,7 @@ BEGIN
                     'description', _tp_description,
                     'sort_order', _tp_sort_order,
                     'due_date', _tp_due_date,
+                    'start_date', _tp_start_date,
                     'assignee_email', _tp_assignee_email,
                     'assignee_name', _tp_assignee_name,
                     'milestone_title', _tp_milestone_title,
@@ -712,6 +737,9 @@ BEGIN
                 END IF;
                 IF COALESCE(_row->>'due_date', '') <> '' THEN
                     _task_attrs := _task_attrs || jsonb_build_object('due_date', _row->>'due_date');
+                END IF;
+                IF COALESCE(_row->>'start_date', '') <> '' THEN
+                    _task_attrs := _task_attrs || jsonb_build_object('start_date', _row->>'start_date');
                 END IF;
                 IF (_row->>'milestone_title') <> '' THEN
                     _ml_id := (_milestones->>(_row->>'milestone_title'))::bigint;

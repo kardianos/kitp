@@ -186,6 +186,7 @@ card_type_id, attribute_def_id, is_required, ordering
 $card_type.project,   $attribute_def.title,             true,  0
 $card_type.task,      $attribute_def.title,             true,  0
 $card_type.milestone, $attribute_def.title,             true,  0
+$card_type.milestone, $attribute_def.due_date,          false, 1
 $card_type.component, $attribute_def.title,             true,  0
 $card_type.tag,       $attribute_def.title,             true,  0
 $card_type.task,      $attribute_def.assignee,          false, 1

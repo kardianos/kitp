@@ -1,4 +1,4 @@
-# bundle | key=tracker | title="Task tracking" | sort=10 | doc="Tasks moved through a status flow (New idea → Todo → Doing → Review → Done), with Inbox, Grid, Kanban, Incoming and Recently Closed screens, approvals, and the Overdue / Due soon / Heads filters."
+# bundle | key=tracker | title="Task tracking" | sort=10 | doc="Tasks moved through a status flow (New idea → Todo → Doing → Review → Done), with Inbox, Grid, Kanban, Incoming, Recently Closed and Timeline screens, approvals, and the Overdue / Due soon / Heads filters."
 
 -- Feature bundle: the task tracker. A bundle file reads like demo.hcsv:
 -- cards use auto ids and resolve parents by title under the bundle's
@@ -50,7 +50,7 @@ flow_id,           from_card_id,  to_card_id,     label,             sort_order,
 @tr_flow_status,  @tr_s_done,   @tr_s_todo,    "Reopen",          1,          true
 @tr_flow_status,  @tr_s_cancel, @tr_s_todo,    "Reopen",          2,          true
 
--- Screens: Inbox (+ its "Waiting on my vote" view), Grid, Kanban, Project, Incoming, Recently Closed.
+-- Screens: Inbox (+ its "Waiting on my vote" view), Grid, Kanban, Project, Incoming, Recently Closed, Timeline.
 ## table card | under=bundle_src | alias=tr_sc_inbox
 ### rows
 card_type_id,     parent_card_id, title,   layout, slug,  hotkey, sort_order, flow_ref,           default_create_status, toggle_groups, extra_columns
@@ -91,6 +91,13 @@ $card_type.screen, parent,         "Incoming", list,   incoming, n,      5,     
 card_type_id,     parent_card_id, title,             layout, slug,            sort_order, flow_ref,          toggle_groups
 $card_type.screen, parent,         "Recently Closed", list,   recently-closed, 6,          @tr_flow_status, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":false},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":true}]}]`
 
+
+-- Timeline (docs/TIMELINE_AND_CALENDAR.md T10): the tasks with a start or
+-- due date as bars on a day axis, banded by the GROUP picker; Active on.
+## table card | under=bundle_src
+### rows
+card_type_id,     parent_card_id, title,      layout,   slug,     hotkey, sort_order, flow_ref,          toggle_groups
+$card_type.screen, parent,         "Timeline", timeline, timeline, t,      7,          @tr_flow_status, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
 
 -- Named filters every project gets: Overdue, Due within 3 days, Heads.
 ## table card | under=bundle_src

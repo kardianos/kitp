@@ -6,8 +6,10 @@
 --
 -- Fields (absent = unchanged on update):
 --   title           1–60 characters; required to create.
---   layout          list | grid (default list; no kanban — its columns are
---                   one project's statuses).
+--   layout          list | grid | calendar | timeline (default list; no
+--                   kanban — its columns are one project's statuses). A
+--                   calendar or timeline lists tasks: a thread has no dates
+--                   (docs/TIMELINE_AND_CALENDAR.md T9).
 --   list_card_type  task | comm (default task); changing it resets the
 --                   phase toggles to that type's status attribute.
 --   predicate       the base filter, screen-filter JSON ('@me' = you; ''
@@ -70,15 +72,27 @@ BEGIN
             CONTINUE;
         END IF;
         _layout := COALESCE(NULLIF(_raw->>'layout', ''), CASE WHEN _creating THEN 'list' END);
-        IF _layout IS NOT NULL AND _layout NOT IN ('list', 'grid') THEN
+        IF _layout IS NOT NULL AND _layout NOT IN ('list', 'grid', 'calendar', 'timeline') THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
-                format('my_screen.set: layout %L is not one of list / grid', _layout), NULL::jsonb;
+                format('my_screen.set: layout %L is not one of list / grid / calendar / timeline', _layout), NULL::jsonb;
             CONTINUE;
         END IF;
         _list := COALESCE(NULLIF(_raw->>'list_card_type', ''), CASE WHEN _creating THEN 'task' END);
         IF _list IS NOT NULL AND _list NOT IN ('task', 'comm') THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
                 format('my_screen.set: list_card_type %L is not one of task / comm', _list), NULL::jsonb;
+            CONTINUE;
+        END IF;
+        -- The layout and list the screen ends with (given, else what it
+        -- has): a calendar or timeline places tasks by their dates.
+        IF COALESCE(_layout, (SELECT v.value #>> '{}' FROM attribute_value v
+                              JOIN attribute_def d ON d.id = v.attribute_def_id AND d.name = 'layout'
+                              WHERE v.card_id = _id)) IN ('calendar', 'timeline')
+           AND COALESCE(_list, (SELECT v.value #>> '{}' FROM attribute_value v
+                                JOIN attribute_def d ON d.id = v.attribute_def_id AND d.name = 'list_card_type'
+                                WHERE v.card_id = _id), 'task') <> 'task' THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'my_screen.set: a calendar or timeline lists tasks (threads have no dates)'::text, NULL::jsonb;
             CONTINUE;
         END IF;
         _pred := COALESCE(_raw->>'predicate', '');

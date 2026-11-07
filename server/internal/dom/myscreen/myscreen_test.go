@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/kitp/kitp/server/internal/api"
@@ -184,6 +185,8 @@ func TestPersonalScreens(t *testing.T) {
 		{"bob renames", call(t, f.srv, f.bob, "my_screen", "set", map[string]any{"id": fmt.Sprint(screen), "title": "Mine"})},
 		{"bob deletes", call(t, f.srv, f.bob, "my_screen", "delete", map[string]any{"id": fmt.Sprint(screen)})},
 		{"bad layout", call(t, f.srv, f.ada, "my_screen", "set", map[string]any{"id": fmt.Sprint(screen), "layout": "kanban"})},
+		{"a calendar of threads", call(t, f.srv, f.ada, "my_screen", "set", map[string]any{"title": "Dated threads", "layout": "calendar", "list_card_type": "comm"})},
+		{"threads on a timeline", call(t, f.srv, f.ada, "my_screen", "set", map[string]any{"id": fmt.Sprint(made.ID), "layout": "timeline"})},
 		{"bad filter", call(t, f.srv, f.ada, "my_screen", "set", map[string]any{"id": fmt.Sprint(screen), "predicate": `{"attr":"project","op":"before_today"}`})},
 	} {
 		if c.r.OK {
@@ -346,4 +349,33 @@ func TestProjectFilter(t *testing.T) {
 	if !slices.Contains(all, a) || !slices.Contains(all, b) {
 		t.Errorf("no project leaf = %v, want both projects' tasks", all)
 	}
+}
+
+// TestPersonalScheduleLayouts: a personal screen can be a calendar or a
+// timeline of tasks (docs/TIMELINE_AND_CALENDAR.md T9), made so or changed
+// to it; one listing threads can't (a thread has no dates), nor can a
+// calendar be switched to list threads.
+func TestPersonalScheduleLayouts(t *testing.T) {
+	f := setup(t, "kitp_test_my_screens_schedule")
+	var cal myscreen.IDOutput
+	into(t, call(t, f.srv, f.ada, "my_screen", "set", map[string]any{"title": "My schedule", "layout": "calendar"}), &cal)
+	var list myscreen.IDOutput
+	into(t, call(t, f.srv, f.ada, "my_screen", "set", map[string]any{"title": "Work"}), &list)
+	into(t, call(t, f.srv, f.ada, "my_screen", "set", map[string]any{"id": fmt.Sprint(list.ID), "layout": "timeline"}), &list)
+
+	var out myscreen.ListOutput
+	into(t, call(t, f.srv, f.ada, "my_screen", "list", map[string]any{}), &out)
+	layouts := map[int64]string{}
+	for _, s := range out.Screens {
+		layouts[s.ID] = s.Layout + "/" + s.ListCardType
+	}
+	if layouts[cal.ID] != "calendar/task" || layouts[list.ID] != "timeline/task" {
+		t.Errorf("layouts = %v, want calendar/task and timeline/task", layouts)
+	}
+	r := call(t, f.srv, f.ada, "my_screen", "set", map[string]any{"id": fmt.Sprint(cal.ID), "list_card_type": "comm"})
+	if r.OK || r.Error == nil || r.Error.Code != "validation" || !strings.Contains(r.Error.Message, "threads have no dates") {
+		t.Errorf("a calendar switched to threads: %+v", r)
+	}
+	// Both together, back to a list of threads, is fine.
+	into(t, call(t, f.srv, f.ada, "my_screen", "set", map[string]any{"id": fmt.Sprint(cal.ID), "layout": "list", "list_card_type": "comm"}), &cal)
 }

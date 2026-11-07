@@ -136,7 +136,7 @@ func TestComposeContentPreset(t *testing.T) {
 	p := out.NewProjectID
 
 	screens := strings.Join(titles(t, f, p, "screen"), ",")
-	if screens != "Grid,Inbox,Incoming,Kanban,Pages,Project,Recently Closed" {
+	if screens != "Grid,Inbox,Incoming,Kanban,Pages,Project,Recently Closed,Timeline" {
 		t.Errorf("screens = %s", screens)
 	}
 	if got := strings.Join(titles(t, f, p, "page"), ","); got != "Getting started,Home" {
@@ -175,9 +175,9 @@ func TestComposeContentPreset(t *testing.T) {
 	origins := scalar[string](t, f, `
 		SELECT string_agg(bundle_key || '=' || n, ',' ORDER BY bundle_key)
 		FROM (SELECT bundle_key, count(*)::text AS n FROM card_origin WHERE project_id = $1 GROUP BY 1) x`, p)
-	// tracker: 6 statuses + 6 screens + 1 view + 3 snippets; publishing: 4
+	// tracker: 6 statuses + 7 screens + 1 view + 3 snippets; publishing: 4
 	// statuses + Pages screen + 2 pages.
-	if origins != "publishing=7,tracker=16" {
+	if origins != "publishing=7,tracker=17" {
 		t.Errorf("origins = %s", origins)
 	}
 	// is_template=false, so the new project is a real, listed project.

@@ -580,3 +580,92 @@ func TestProjectImportDueDates(t *testing.T) {
 		t.Errorf("imported due_date = %q, %v", due, err)
 	}
 }
+
+// TestProjectImportStartDates — a start_date column takes YYYY-MM-DD only,
+// like due_date, and a row whose start is after its due date is listed by
+// the preview (docs/TIMELINE_AND_CALENDAR.md T8) and refused by the commit;
+// a good pair lands on the task.
+func TestProjectImportStartDates(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_project_import_start_dates")
+	pid := seedProject(t, pool, "Start")
+	mapping := map[string]string{"title": "title", "start": "start_date", "due": "due_date"}
+	header := []string{"title", "start", "due"}
+
+	job := seedImportJob(t, pool, pid, "mapped", mapping, map[string]any{})
+	rows := callBatch(t, pool, "project_import_preview_batch", auth.SystemUserID, []map[string]any{{
+		"job_id": fmt.Sprint(job), "_parsed_header": header,
+		"_parsed_rows": [][]string{
+			{"Good", "2026-11-01", "2026-11-03"},     // row 2
+			{"Bad start", "Nov 1", "2026-11-03"},     // row 3
+			{"Inverted", "2026-11-04", "2026-11-03"}, // row 4
+			{"Same day", "2026-11-03", "2026-11-03"}, // row 5
+			{"Start only", "2026-11-09", ""},         // row 6
+			{"Neither", "", ""},                      // row 7
+		},
+	}})
+	if len(rows) != 1 || !rows[0].OK {
+		t.Fatalf("preview: %+v", rows)
+	}
+	var preview struct {
+		Errors []struct {
+			Row     int    `json:"row"`
+			Column  string `json:"column"`
+			Message string `json:"message"`
+		} `json:"errors"`
+		WouldCreate struct {
+			Tasks int `json:"tasks"`
+		} `json:"would_create"`
+	}
+	if err := json.Unmarshal(rows[0].Result, &preview); err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Errors) != 2 ||
+		preview.Errors[0].Row != 3 || preview.Errors[0].Column != "start_date" ||
+		preview.Errors[1].Row != 4 || preview.Errors[1].Column != "start_date" ||
+		preview.Errors[1].Message != "the start date 2026-11-04 is after the due date 2026-11-03" {
+		t.Errorf("preview errors = %+v, want row 3's start_date and row 4's pair", preview.Errors)
+	}
+	if preview.WouldCreate.Tasks != 4 {
+		t.Errorf("would create %d tasks, want 4", preview.WouldCreate.Tasks)
+	}
+
+	for _, bad := range [][]string{{"Bad start", "Nov 1", "2026-11-03"}, {"Inverted", "2026-11-04", "2026-11-03"}} {
+		job := seedImportJob(t, pool, pid, "previewed", mapping, map[string]any{})
+		rows = callBatch(t, pool, "project_import_commit_batch", auth.SystemUserID, []map[string]any{{
+			"job_id": fmt.Sprint(job), "_parsed_header": header, "_parsed_rows": [][]string{bad},
+		}})
+		if len(rows) != 1 || rows[0].OK || rows[0].Code != "import_validation" {
+			t.Errorf("commit %v: %+v, want import_validation", bad, rows)
+		}
+	}
+
+	good := seedImportJob(t, pool, pid, "previewed", mapping, map[string]any{})
+	rows = callBatch(t, pool, "project_import_commit_batch", auth.SystemUserID, []map[string]any{{
+		"job_id": fmt.Sprint(good), "_parsed_header": header,
+		"_parsed_rows": [][]string{{"Good", "2026-11-01", "2026-11-03"}, {"Start only", "2026-11-09", ""}},
+	}})
+	if len(rows) != 1 || !rows[0].OK {
+		t.Fatalf("commit: %+v", rows)
+	}
+	got := map[string]string{}
+	r, err := pool.Query(context.Background(), `
+		SELECT (SELECT tv.value #>> '{}' FROM attribute_value tv JOIN attribute_def td ON td.id = tv.attribute_def_id
+		        WHERE tv.card_id = c.id AND td.name = 'title'),
+		       coalesce(card_date(c.id, 'start_date'), '') || '/' || coalesce(card_date(c.id, 'due_date'), '')
+		FROM card c JOIN card_type ct ON ct.id = c.card_type_id AND ct.name = 'task'
+		WHERE c.parent_card_id = $1`, pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for r.Next() {
+		var title, dates string
+		if err := r.Scan(&title, &dates); err != nil {
+			t.Fatal(err)
+		}
+		got[title] = dates
+	}
+	r.Close()
+	if got["Good"] != "2026-11-01/2026-11-03" || got["Start only"] != "2026-11-09/" || len(got) != 2 {
+		t.Errorf("imported dates = %v", got)
+	}
+}

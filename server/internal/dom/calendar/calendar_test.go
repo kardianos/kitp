@@ -226,9 +226,10 @@ func TestCalendarValidation(t *testing.T) {
 	}
 }
 
-// TestCalendarRangeUsesTheIndex: the due-date range the feed runs is an
-// index scan on attribute_value_def_value (with sequential scans off, so a
-// tiny test table can't make the planner prefer one).
+// TestCalendarRangeUsesTheIndex: the due-date bound the feed runs (due on
+// or after the window's first day) is an index scan on
+// attribute_value_def_value (with sequential scans off, so a tiny test
+// table can't make the planner prefer one).
 func TestCalendarRangeUsesTheIndex(t *testing.T) {
 	f := setup(t, "kitp_test_calendar_index")
 	f.task(t, f.project, "One", "2026-11-10", nil)
@@ -244,7 +245,7 @@ func TestCalendarRangeUsesTheIndex(t *testing.T) {
 	rows, err := tx.Query(ctx, `EXPLAIN SELECT av.card_id FROM attribute_value av
 		WHERE av.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'due_date')
 		  AND av.value_type_id < 50
-		  AND av.value >= to_jsonb('2026-10-01'::text) AND av.value <= to_jsonb('2027-11-03'::text)`)
+		  AND av.value >= to_jsonb('2026-10-01'::text)`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,5 +258,72 @@ func TestCalendarRangeUsesTheIndex(t *testing.T) {
 	rows.Close()
 	if !strings.Contains(strings.Join(plan, "\n"), "attribute_value_def_value") {
 		t.Errorf("the range doesn't use attribute_value_def_value:\n%s", strings.Join(plan, "\n"))
+	}
+}
+
+// TestCalendarFeedSpans: a task with a start and a due date is one all-day
+// event across its days (DTEND the day after the due date, as DATE values
+// are exclusive), listed when any of its days fall in the window — a long
+// task running right through it too. A start with no due date has no end
+// and stays out of the feed.
+func TestCalendarFeedSpans(t *testing.T) {
+	f := setup(t, "kitp_test_calendar_spans")
+	// today is 2026-11-03; past_days 0 / future_days 10 makes the window
+	// 2026-11-03 … 2026-11-13.
+	span := f.task(t, f.project, "Span", "2026-11-05", map[string]any{"start_date": "2026-11-01"})
+	through := f.task(t, f.project, "Runs through", "2027-02-01", map[string]any{"start_date": "2026-09-01"})
+	endsInside := f.task(t, f.project, "Ends inside", "2026-11-03", map[string]any{"start_date": "2026-10-20"})
+	startsInside := f.task(t, f.project, "Starts inside", "2026-12-01", map[string]any{"start_date": "2026-11-13"})
+	sameDay := f.task(t, f.project, "One day", "2026-11-07", map[string]any{"start_date": "2026-11-07"})
+	endedBefore := f.task(t, f.project, "Ended before", "2026-11-02", map[string]any{"start_date": "2026-10-01"})
+	startsAfter := f.task(t, f.project, "Starts after", "2026-11-20", map[string]any{"start_date": "2026-11-14"})
+	var startOnly card.InsertOutput
+	into(t, call(t, f.srv, auth.WithSystemUser(context.Background()), "card", "insert", map[string]any{
+		"card_type_name": "task", "parent_card_id": fmt.Sprint(f.project), "title": "No end",
+		"attributes": map[string]any{"start_date": "2026-11-04"},
+	}), &startOnly)
+
+	var cal calendar.IDOutput
+	into(t, call(t, f.srv, f.ada, "calendar", "set", map[string]any{"title": "Spans", "past_days": 0, "future_days": 10}), &cal)
+	var u calendar.URLCreateOutput
+	into(t, call(t, f.srv, f.ada, "calendar_url", "create", map[string]any{"calendar_id": fmt.Sprint(cal.ID)}), &u)
+	code, body := f.fetch(t, u.Token)
+	if code != 200 {
+		t.Fatalf("feed: %d %q", code, body)
+	}
+	// Each event's lines, by task id.
+	events := map[int64]string{}
+	for _, ev := range strings.Split(body, "BEGIN:VEVENT\r\n")[1:] {
+		var id int64
+		if _, err := fmt.Sscanf(ev[strings.Index(ev, "UID:task-")+len("UID:task-"):], "%d", &id); err != nil {
+			t.Fatalf("event without a task UID: %q", ev)
+		}
+		events[id] = ev
+	}
+	for _, c := range []struct {
+		name       string
+		id         int64
+		start, end string // "" = not in the feed
+	}{
+		{"a span", span, "20261101", "20261106"},
+		{"a long task through the window", through, "20260901", "20270202"},
+		{"a span ending on the first day", endsInside, "20261020", "20261104"},
+		{"a span starting on the last day", startsInside, "20261113", "20261202"},
+		{"start and due on one day", sameDay, "20261107", "20261108"},
+		{"a span that ended before", endedBefore, "", ""},
+		{"a span starting after", startsAfter, "", ""},
+		{"a start with no due date", startOnly.ID, "", ""},
+	} {
+		ev, ok := events[c.id]
+		switch {
+		case c.start == "" && ok:
+			t.Errorf("%s (task %d) is in the feed", c.name, c.id)
+		case c.start != "" && !ok:
+			t.Errorf("%s (task %d) is missing", c.name, c.id)
+		case c.start != "":
+			if !strings.Contains(ev, "DTSTART;VALUE=DATE:"+c.start+"\r\n") || !strings.Contains(ev, "DTEND;VALUE=DATE:"+c.end+"\r\n") {
+				t.Errorf("%s (task %d): want DTSTART %s DTEND %s in %q", c.name, c.id, c.start, c.end, ev)
+			}
+		}
 	}
 }

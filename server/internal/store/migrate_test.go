@@ -42,12 +42,12 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// 0006_drop_comms_attached_filter.)
 		{seedOnly(`SELECT count(*) FROM card c WHERE %s`, "c.id"), 22},
 		// Feature bundle sources (db/schema/bundles/, materialised by the
-		// bundle tier): tracker 17 (project + 6 statuses + 6 screens + the
-		// Inbox view + 3 snippets) + helpdesk 10 (project + 5 statuses + 4
-		// screens) + conversations 6 (project + 4 statuses + Comms screen)
-		// + publishing 8 (project + 4 statuses + Pages screen + Home and
-		// Getting started pages) = 41.
-		{bundleOnly(`SELECT count(*) FROM card c WHERE %s`, "c.id"), 41},
+		// bundle tier): tracker 18 (project + 6 statuses + 7 screens, the
+		// Timeline the last, + the Inbox view + 3 snippets) + helpdesk 10
+		// (project + 5 statuses + 4 screens) + conversations 6 (project + 4
+		// statuses + Comms screen) + publishing 8 (project + 4 statuses +
+		// Pages screen + Home and Getting started pages) = 42.
+		{bundleOnly(`SELECT count(*) FROM card c WHERE %s`, "c.id"), 42},
 		{`SELECT count(*) FROM user_role`, 3}, // admin + manager + worker on user 1
 		{`SELECT count(*) FROM role`, 5},      // viewer, commenter, worker, manager, admin (no wildcard 'system')
 		// 14 built-in card_types + the predicate_snippet card_type
@@ -80,8 +80,8 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// attachments_left_off), +4 on watch_list, +2 on screen
 		// (list_card_type, predicate) and +1 on filter (my_default), +1 on
 		// reply_body (reply_cc) and +1 on comm (comm_confirmed), +1 on
-		// task (start_date).
-		{`SELECT count(*) FROM edge`, 164},
+		// task (start_date), +1 on milestone (due_date).
+		{`SELECT count(*) FROM edge`, 165},
 		// +activity_subscription.set / .delete.
 		{`SELECT count(*) FROM process`, 8},
 		{`SELECT count(*) FROM process_step`, 9},
@@ -1040,7 +1040,7 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		{`SELECT count(*) FROM role`, 5},
 		{`SELECT count(*) FROM card_type`, 23},
 		{`SELECT count(*) FROM attribute_def`, 111},
-		{`SELECT count(*) FROM edge`, 164},
+		{`SELECT count(*) FROM edge`, 165},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		// test_demo adds none of its own.
@@ -2029,6 +2029,59 @@ func TestForwardMigration0046TaskStartDate(t *testing.T) {
 		if gotShape != freshShape || gotDefs != freshDefs || gotEdges != freshEdges {
 			t.Errorf("apply %d after removal: start_date %q (%d defs, %d edges), want the fresh seed's %q (%d, %d)",
 				i+1, gotShape, gotDefs, gotEdges, freshShape, freshDefs, freshEdges)
+		}
+	}
+}
+
+// TestForwardMigration0047MilestoneDueDate: an install from before
+// milestones had a date gets due_date bound to milestone exactly as a fresh
+// one has it from the seed — optional, ordering 1 — and a further boot is a
+// no-op. The task's due_date edge is left alone.
+func TestForwardMigration0047MilestoneDueDate(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0047")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+	const shape = `SELECT coalesce(string_agg(ct.name || '/' || ad.value_type || '/' || e.is_required::text || '/' || e.ordering::text, ',' ORDER BY ct.name), '')
+		FROM attribute_def ad
+		JOIN edge e ON e.attribute_def_id = ad.id
+		JOIN card_type ct ON ct.id = e.card_type_id
+		WHERE ad.name = 'due_date'`
+	read := func() (string, int64) {
+		var s string
+		var edges int64
+		if err := pool.QueryRow(ctx, shape).Scan(&s); err != nil {
+			t.Fatalf("due_date shape: %v", err)
+		}
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM edge`).Scan(&edges); err != nil {
+			t.Fatal(err)
+		}
+		return s, edges
+	}
+	freshShape, freshEdges := read()
+	if freshShape != "milestone/date/false/1,task/date/false/9" {
+		t.Fatalf("fresh seed's due_date edges are %q, want milestone/date/false/1,task/date/false/9", freshShape)
+	}
+	for _, stmt := range []string{
+		`DELETE FROM edge WHERE attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'due_date')
+			AND card_type_id = (SELECT id FROM card_type WHERE name = 'milestone')`,
+		`DELETE FROM schema_version WHERE name = '0047_milestone_due_date'`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("simulate an older install (%s): %v", stmt, err)
+		}
+	}
+	if gotShape, gotEdges := read(); gotShape != "task/date/false/9" || gotEdges != freshEdges-1 {
+		t.Fatalf("after removal: %q (%d edges), want task/date/false/9 (%d)", gotShape, gotEdges, freshEdges-1)
+	}
+	for i := range 2 {
+		if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+			t.Fatalf("apply %d after removal: %v", i+1, err)
+		}
+		if gotShape, gotEdges := read(); gotShape != freshShape || gotEdges != freshEdges {
+			t.Errorf("apply %d after removal: due_date %q (%d edges), want the fresh seed's %q (%d)",
+				i+1, gotShape, gotEdges, freshShape, freshEdges)
 		}
 	}
 }

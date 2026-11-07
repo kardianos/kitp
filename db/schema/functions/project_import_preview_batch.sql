@@ -76,6 +76,7 @@ DECLARE
     _col_idx_assignee int;
     _col_idx_sort int;
     _col_idx_due int;
+    _col_idx_start int;
     _header_name text;
     _target text;
     _hdr_pos int;
@@ -92,8 +93,13 @@ DECLARE
     _new_components jsonb;
     _new_tags jsonb;
     _allowed_targets text[] := ARRAY['id','title','assignee_email','assignee_name',
-                                     'milestone','component','tags','description','sort_order','due_date'];
+                                     'milestone','component','tags','description','sort_order','due_date',
+                                     'start_date'];
     _ref_skip boolean;
+    -- A row's dates as given, when they are dates (the pair check).
+    _row_start text;
+    _row_due text;
+    _date_problem text;
     _ref_error_msg text;
     _tag_part text;
     -- Accumulators, appended to in O(1) and turned into jsonb once: a jsonb
@@ -243,6 +249,7 @@ BEGIN
         _col_idx_assignee := -1;
         _col_idx_sort := -1;
         _col_idx_due := -1;
+        _col_idx_start := -1;
         _unknown_targets := '{}'::jsonb;
         _hdr_pos := 0;
         FOR _header_name IN SELECT v #>> '{}' FROM jsonb_array_elements(_header) AS v
@@ -265,6 +272,7 @@ BEGIN
                 WHEN 'assignee_email' THEN _col_idx_assignee := _hdr_pos;
                 WHEN 'sort_order' THEN _col_idx_sort := _hdr_pos;
                 WHEN 'due_date' THEN _col_idx_due := _hdr_pos;
+                WHEN 'start_date' THEN _col_idx_start := _hdr_pos;
                 ELSE NULL;
             END CASE;
             _hdr_pos := _hdr_pos + 1;
@@ -430,14 +438,38 @@ BEGIN
                 END IF;
             END IF;
 
-            -- due_date: YYYY-MM-DD only (iso_date_ok; docs/MAIL_INTAKE_AND_CALENDARS.md §1)
+            -- due_date / start_date: YYYY-MM-DD only (iso_date_ok;
+            -- docs/MAIL_INTAKE_AND_CALENDARS.md §1), and the start not after
+            -- the due date (docs/TIMELINE_AND_CALENDAR.md T8) — listed here,
+            -- per row, so a bad row shows before the commit (whose card.insert
+            -- and the attribute_value_date_order trigger would refuse it).
+            _row_due := NULL;
+            _row_start := NULL;
             IF _col_idx_due >= 0 THEN
                 _v := btrim(COALESCE(_row->>_col_idx_due, ''));
                 IF _v <> '' AND NOT iso_date_ok(_v) THEN
                     _row_errors := _row_errors || jsonb_build_array(
                         jsonb_build_object('row', _row_num, 'column', 'due_date',
                             'message', format('due_date "%s" is not a date (YYYY-MM-DD)', _v)));
+                ELSIF _v <> '' THEN
+                    _row_due := _v;
                 END IF;
+            END IF;
+            IF _col_idx_start >= 0 THEN
+                _v := btrim(COALESCE(_row->>_col_idx_start, ''));
+                IF _v <> '' AND NOT iso_date_ok(_v) THEN
+                    _row_errors := _row_errors || jsonb_build_array(
+                        jsonb_build_object('row', _row_num, 'column', 'start_date',
+                            'message', format('start_date "%s" is not a date (YYYY-MM-DD)', _v)));
+                ELSIF _v <> '' THEN
+                    _row_start := _v;
+                END IF;
+            END IF;
+            _date_problem := date_order_problem(_row_start, _row_due);
+            IF _date_problem IS NOT NULL THEN
+                _row_errors := _row_errors || jsonb_build_array(
+                    jsonb_build_object('row', _row_num, 'column', 'start_date',
+                        'message', _date_problem));
             END IF;
 
             -- sort_order numeric

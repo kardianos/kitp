@@ -1629,6 +1629,23 @@ JOIN attribute_def ad ON ad.name = 'start_date'
 WHERE ct.name = 'task'
 ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;`,
 	},
+	{
+		// A milestone's date (docs/TIMELINE_AND_CALENDAR.md T6): the
+		// existing due_date attribute bound to the milestone card type, so
+		// a milestone's date has one meaning, one date picker and one
+		// filter op with a task's. Ordering 1, just after the title (a
+		// milestone's other fields — tags, sort_order, is_active — sit at
+		// 4 and 5). Idempotent — ON CONFLICT DO NOTHING makes it a no-op
+		// on a fresh DB whose seed has the edge.
+		id: "0047_milestone_due_date",
+		sql: `
+INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+SELECT ct.id, ad.id, false, 1
+FROM card_type ct
+JOIN attribute_def ad ON ad.name = 'due_date'
+WHERE ct.name = 'milestone'
+ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that
