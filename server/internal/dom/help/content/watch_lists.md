@@ -22,7 +22,9 @@ The page address keeps the list you picked (`/watch-lists?list=<id>`), so you ca
 
 ## Filtering on a list
 
-Any screen's filter (**Advanced**) has **On my watch list**: *Any of my lists*, or one or more of your lists, with *is in* or *is not in*. Combine it with the screen's phase toggles — *Active* is the usual one — to work through what you're watching that's still open. Saved on a shared screen, *Any of my lists* means each viewer's own lists.
+Any screen's filter (**Advanced**) has **On my watch list**: *Any of my lists*, or one or more of your lists, with *is any of* or *is none of*. Combine it with the screen's phase toggles — *Active* is the usual one — to work through what you're watching that's still open.
+
+Saved on a shared screen, *Any of my lists* means each viewer's own lists. A particular list is yours alone, so on a shared screen it says *(works only for you)*: **Save as my view…** keeps it, and **Save current as new view…** asks to save it as your own view instead — in a view for everyone it would match nothing for anybody else. A list marked *Someone's own* is another person's, in a view saved before; take it out, or pick *Any of my lists*.
 
 The same filter works in a calendar feed (Account → Calendars) and a notification subscription, so *Stars, due this month* or *mail me about what I'm watching* are one filter away.
 

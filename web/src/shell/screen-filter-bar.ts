@@ -64,7 +64,15 @@ import {
   type PhaseToggle,
 } from '../filter/screen-resolve.js';
 import { refAxesForCardType, type RefAxis, type CardTypeRow } from '../filter/vocabulary.js';
-import { DERIVED_OPTION_SOURCES, derivedOptionTargets, schemaForCardType } from '../filter/attribute-schema.js';
+import {
+  type AttrSchema,
+  DERIVED_OPTION_SOURCES,
+  derivedOptionTargets,
+  findAttr,
+  perViewerLeaves,
+  resolveSchema,
+  schemaForCardType,
+} from '../filter/attribute-schema.js';
 import { loadView, saveView } from '../filter/view-persistence.js';
 import { groupAxisForAttr, type GroupAttr } from '../filter/group-axis.js';
 import { icon, type IconName } from '../ui/icons.js';
@@ -518,6 +526,9 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       // (the grid consumes `screen.sort` as the default order). GROUP stays the
       // dedicated row-2 picker, so it's not duplicated here.
       sortPath: 'screen.sort',
+      // On a shared screen a saved view is for everyone: your own watch lists
+      // say they work only for you (saveCurrentAsNew checks the shared save).
+      shared: this.config.personal !== true,
     };
     this.predicateChild = this.spawn('PredicateFilter', this.predicateConfig, panel);
 
@@ -1316,17 +1327,29 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
    * selected immediately; on a server id we replace the temp id, on a fault the
    * optimistic append rolls back (the centralized funnel surfaces the error).
    */
-  private saveCurrentAsNew(mine: boolean): void {
+  private saveCurrentAsNew(asMine: boolean): void {
     const statePath = this.config.screenStatePath;
     if (statePath === undefined) return;
     const screenId = this.ctx.tree.at([...statePath, 'screenId']).peek<bigint | null>() ?? null;
     if (screenId === null) return; // no resolved screen → nothing to parent under
+    const predicate = this.ctx.tree.at(['screen', 'predicate']).peek<Predicate | null>() ?? null;
+    let mine = asMine;
+    // A view for everyone can't name your own watch lists: only you see them,
+    // so for anyone else it would match nothing. Offer to keep it as yours.
+    if (!mine && this.config.personal !== true) {
+      const fields = this.perViewerFields(predicate);
+      if (fields.length > 0) {
+        const named = fields.map((f) => `“${f.label}”`).join(', ');
+        const share = fields.map((f) => `“${f.meLabel ?? 'Me'}”`).join(', ');
+        if (!confirmText(`${named} names lists of your own, which only you see — in a view for everyone it would match nothing for anyone else. Save it as your own view instead? (To share it, pick ${share}.)`)) return;
+        mine = true;
+      }
+    }
     const title = promptText(mine ? 'Save as my view (only you see it):' : 'Save current filter as:', '');
     if (title === null) return;
     const trimmed = title.trim();
     if (trimmed === '') return;
 
-    const predicate = this.ctx.tree.at(['screen', 'predicate']).peek<Predicate | null>() ?? null;
     const attributes: Record<string, unknown> = { title: trimmed };
     if (predicate !== null) {
       // Stored as a JSON STRING (the shape readPredicate reads back).
@@ -1375,6 +1398,19 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
         },
       },
     );
+  }
+
+  /** The per-viewer fields (watch lists) [p] names particular values of —
+   *  what a view for everyone can't use (perViewerLeaves). */
+  private perViewerFields(p: Predicate | null): AttrSchema[] {
+    const defs = this.ctx.tree.at(['vocab', 'attrDefs']).peek<AttributeDefRow[]>() ?? [];
+    const schema = resolveSchema({ cardType: this.predicateCardType }, defs);
+    const out: AttrSchema[] = [];
+    for (const leaf of perViewerLeaves(p, schema)) {
+      const f = findAttr(schema, leaf.attr);
+      if (f !== undefined && !out.includes(f)) out.push(f);
+    }
+    return out;
   }
 
   /** Set the active preset as the screen's default_filter (attribute.update);

@@ -10,6 +10,8 @@
  *     its new neighbours), Remove takes it off;
  *   - helpers: sortOrderForSlot, watchItemHref, watchListOptions,
  *     listFromSearch; the filter's watch_list field and its option source;
+ *     the filter bar on a shared screen (your lists work only for you; a
+ *     view for everyone can't name one) and on a personal one;
  *     the route and its help topic.
  */
 
@@ -44,6 +46,11 @@ before(async () => {
   M = await import(`${outdir}/app.js`);
   M.registerWatchBar();
   M.registerWatchLists();
+  M.registerScreenFilterBar();
+  M.registerPredicateFilter();
+  M.registerQuickChips();
+  M.registerFilterPresetSelector();
+  M.registerCombobox();
 });
 
 beforeEach(() => {
@@ -64,6 +71,12 @@ function respond(sr) {
   if (k === 'watch.move') return { id: sr.id, ok: true, data: { sort_order: data.sort_order } };
   if (k === 'watch_list.set') return { id: sr.id, ok: true, data: { id: data.id ?? '12' } };
   if (k === 'watch_list.delete') return { id: sr.id, ok: true, data: { id: data.id } };
+  // The screen filter bar's vocabulary (no attributes: the derived fields
+  // remain) and its saved views.
+  if (k === 'attribute_def.select' || k === 'card_type.select' || k === 'card.select_with_attributes') {
+    return { id: sr.id, ok: true, data: { rows: [] } };
+  }
+  if (k === 'card.insert') return { id: sr.id, ok: true, data: { id: '900' } };
   return { id: sr.id, ok: false, error: { code: 'unknown', message: k } };
 }
 
@@ -307,6 +320,122 @@ test('the filter offers "On my watch list" on tasks and threads, its options fro
   }
   assert.equal(M.DERIVED_OPTION_SOURCES.watch_list.spec, 'watch_list.list');
 });
+
+/* --------------------- the filter bar: shared vs your own -------------------- */
+
+// The filter bar's builder knows a shared screen's views are for everyone: your
+// lists say they work only for you, and "Save current as new view…" won't put
+// one in a view for everyone (it offers your own view); "Save as my view…" and
+// a personal screen keep them as they are.
+function mountBar(api, personal) {
+  const tree = new M.TreeNode({}, []);
+  const statePath = ['screens', 'test'];
+  tree.at([...statePath, 'screenId']).set(77n);
+  tree.at([...statePath, 'filters']).set([]);
+  const bar = M.Control.New(
+    'ScreenFilterBar',
+    { type: 'ScreenFilterBar', screenStatePath: statePath, ...(personal ? { personal: true } : {}) },
+    { api, tree },
+  );
+  bar.mount(document.createElement('div'));
+  document.body.appendChild(bar.el);
+  return bar;
+}
+
+function findControl(root, type) {
+  if (root.type === type) return root;
+  for (const c of root.childControls()) {
+    const hit = findControl(c, type);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** Build "On my watch list is any of [values]" in the bar's Advanced panel;
+ *  returns the picker's option labels. */
+function pickWatchLists(bar, values) {
+  const pf = bar.el.querySelector('[data-control="PredicateFilter"]');
+  pf.querySelector('[data-pred-add-leaf]').click();
+  M.flushSync?.();
+  const attr = pf.querySelector('[data-pred-attr]');
+  attr.value = 'watch_list';
+  attr.dispatchEvent(new window.Event('change'));
+  M.flushSync?.();
+  const picker = pf.querySelector('[data-pred-ref]');
+  for (const o of picker.options) o.selected = values.includes(o.value);
+  picker.dispatchEvent(new window.Event('change'));
+  M.flushSync?.();
+  return [...picker.options].map((o) => o.textContent);
+}
+
+const BAR_CASES = [
+  {
+    name: 'a shared view with your list → asked, saved as your own view',
+    personal: false, save: 'onSave', values: ['10'], confirm: true,
+    labels: ['Any of my lists', '★ Stars (works only for you)', '⏳ Waiting (works only for you)'],
+    asked: true, saved: { private: true },
+  },
+  {
+    name: 'a shared view with your list, and you say no → not saved',
+    personal: false, save: 'onSave', values: ['10'], confirm: false, asked: true, saved: null,
+  },
+  {
+    name: 'a shared view with "Any of my lists" → saved for everyone, no question',
+    personal: false, save: 'onSave', values: ['@me'], asked: false, saved: { private: undefined },
+  },
+  {
+    name: '"Save as my view…" with your list → saved as yours, no question',
+    personal: false, save: 'onSaveMine', values: ['10', '11'], asked: false, saved: { private: true },
+  },
+  {
+    name: 'a personal screen → your lists as they are, no question',
+    personal: true, save: 'onSave', values: ['10'], asked: false,
+    labels: ['Any of my lists', '★ Stars', '⏳ Waiting'],
+    saved: { private: undefined }, // a personal screen's views are private through their screen
+  },
+];
+
+for (const c of BAR_CASES) {
+  test(`the filter bar: ${c.name}`, async () => {
+    const { dispatcher, api } = bootApi();
+    M.registerKanbanSpecs(api);
+    M.registerProjectSpecs(api); // card.insert
+    M.registerFilterSpecs(api);
+    const bar = mountBar(api, c.personal);
+    await settle(dispatcher);
+    assert.ok(calls.some((x) => x.k === 'watch_list.list'), 'your lists load');
+
+    const labels = pickWatchLists(bar, c.values);
+    if (c.labels !== undefined) assert.deepEqual(labels, c.labels);
+
+    const asked = [];
+    window.confirm = (msg) => {
+      asked.push(msg);
+      return c.confirm === true;
+    };
+    window.prompt = () => 'Stars';
+    try {
+      findControl(bar, 'FilterPresetSelector').config[c.save]();
+      await settle(dispatcher);
+    } finally {
+      delete window.confirm;
+      delete window.prompt;
+    }
+    assert.equal(asked.length > 0, c.asked, 'asked first');
+    if (c.asked) assert.match(asked[0], /“On my watch list” names lists of your own.*“Any of my lists”/);
+    const insert = calls.find((x) => x.k === 'card.insert');
+    if (c.saved === null) {
+      assert.equal(insert, undefined, 'nothing saved');
+      return;
+    }
+    assert.ok(insert, 'saved');
+    assert.equal(insert.data.private, c.saved.private);
+    assert.deepEqual(JSON.parse(insert.data.attributes.predicate), {
+      connective: 'and',
+      children: [{ attr: 'watch_list', op: 'in', values: c.values }],
+    });
+  });
+}
 
 test('the /watch-lists route and its help topic', () => {
   const r = M.matchRoute('/watch-lists');

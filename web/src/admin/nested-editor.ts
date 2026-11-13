@@ -1933,6 +1933,8 @@ export class NestedEditor extends Control<NestedEditorConfig> {
         // The universal view builder: also edit Group by + Sort by here.
         groupPath: groupPath.join('.'),
         sortPath: sortPath.join('.'),
+        // A screen's view is for everyone unless it's your own (🔒).
+        shared: f['private'] !== true,
       },
       slot,
     );

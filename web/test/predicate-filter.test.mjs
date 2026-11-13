@@ -270,6 +270,55 @@ test('a field can name its own "Me": the watch list field leads its options with
   assert.ok([...ref.children].some((o) => o.value === '10' && o.textContent === '★ Stars'), 'then my lists');
 });
 
+// The builder is told who reads the filter: your own (calendar, personal
+// screen, your view) or everyone (a view on a shared screen). Your watch lists
+// work only for you, so for everyone they say so; a stored list that isn't
+// one of yours (a shared view saved before) stays visible to take out.
+const WATCH_AUDIENCES = [
+  { name: 'for you: your lists as they are', shared: false, stored: ['10'], labels: ['Any of my lists', '★ Stars'] },
+  {
+    name: 'for everyone: your lists work only for you',
+    shared: true,
+    stored: ['10'],
+    labels: ['Any of my lists', '★ Stars (works only for you)'],
+  },
+  {
+    name: 'for everyone: someone else’s list stays visible',
+    shared: true,
+    stored: ['99'],
+    labels: ['Any of my lists', '★ Stars (works only for you)', 'Someone’s own (works only for them)'],
+  },
+];
+
+for (const c of WATCH_AUDIENCES) {
+  test(`the watch list field, ${c.name}`, () => {
+    const { ctx, tree } = literalCtx();
+    const schema = [M.DERIVED_FILTER_FIELDS.task.find((f) => f.name === 'watch_list')];
+    tree.at(['screen', 'filterOptions']).set({ watch_list: [{ value: '10', label: '★ Stars' }] });
+    tree.at(['screen', 'filter']).set({ kind: 'leaf', attr: 'watch_list', op: 'in', values: c.stored });
+    const pf = mount(
+      { type: 'PredicateFilter', valuePath: 'screen.filter', schema, optionsPath: 'screen.filterOptions', shared: c.shared },
+      ctx,
+    );
+    const ref = pf.el.querySelector('[data-pred-ref]');
+    assert.deepEqual([...ref.children].map((o) => o.textContent), c.labels);
+    const picked = [...ref.children].filter((o) => o.selected).map((o) => o.value);
+    assert.deepEqual(picked, c.stored, 'the stored list is picked');
+  });
+}
+
+test('perViewerLeaves: the leaves naming a particular watch list (not "Any of my lists")', () => {
+  const schema = M.DERIVED_FILTER_FIELDS.task;
+  const leaf = (values) => ({ kind: 'leaf', attr: 'watch_list', op: 'in', values });
+  const status = { kind: 'leaf', attr: 'status', op: 'hasPhase', values: ['active'] };
+  const and = (...children) => ({ kind: 'group', connective: 'and', children });
+  assert.deepEqual(M.perViewerLeaves(null, schema), []);
+  assert.deepEqual(M.perViewerLeaves(and(leaf(['@me']), status), schema), []);
+  assert.deepEqual(M.perViewerLeaves(and(status, { kind: 'group', connective: 'not', children: [leaf(['@me', '10'])] }), schema), [leaf(['@me', '10'])]);
+  // Not a per-viewer field: a project id is the same for everyone.
+  assert.deepEqual(M.perViewerLeaves({ kind: 'leaf', attr: 'project', op: 'in', values: ['7'] }, schema), []);
+});
+
 test('text leaf: typing a value lands a contains predicate', () => {
   const { ctx } = literalCtx();
   const c = mount(

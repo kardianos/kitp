@@ -100,6 +100,16 @@ export interface PredicateFilterConfig extends BaseControlConfig {
    * `order` param. When set the editor renders an ordered "Sort by" list.
    */
   sortPath?: string;
+  /**
+   * The predicate is for other people too: a view on a shared screen, rather
+   * than your own filter, personal screen, calendar or subscription. A field
+   * whose values are each viewer's own cards (AttrSchema.perViewer: watch
+   * lists) then says its particular options work only for you — only its
+   * `@me` option ("Any of my lists") works for everyone — and keeps a stored
+   * card that isn't one of yours (a view saved before) visible, so it can be
+   * taken out. The host checks a shared save (perViewerLeaves).
+   */
+  shared?: boolean;
 }
 
 declare module '../core/control.js' {
@@ -898,7 +908,8 @@ export class PredicateFilter extends Control<PredicateFilterConfig> {
     options: OptionsMap,
     multi: boolean,
   ): HTMLElement {
-    const list = attr?.targetCardType ? (options[attr.targetCardType] ?? []) : [];
+    let list = attr?.targetCardType ? (options[attr.targetCardType] ?? []) : [];
+    if (this.config.shared === true && attr?.perViewer === true) list = sharedPerViewerOptions(list, leaf.values);
     const sel = this.valueSelect(leaf, attr?.label ?? leaf.attr, list, multi, (selected) => {
       // Person refs (assignee / originator) offer a dynamic "Me" that resolves
       // to the current viewer server-side (the `@me` token; see ME_REF_TOKEN).
@@ -1013,6 +1024,18 @@ function isAst(v: unknown): boolean {
     ((v as Record<string, unknown>).kind === 'leaf' ||
       (v as Record<string, unknown>).kind === 'group')
   );
+}
+
+/** A per-viewer field's options in a builder for a shared view: your own
+ *  cards say they work only for you, and a stored one that isn't among them
+ *  (someone's own, saved before) stays listed so it can be deselected. */
+function sharedPerViewerOptions(list: readonly RefOption[], values: readonly unknown[]): RefOption[] {
+  const known = new Set(list.map((o) => o.value));
+  const others = values
+    .map((v) => String(v))
+    .filter((v) => v !== '' && v !== ME_REF_TOKEN && !known.has(v))
+    .map((v) => ({ value: v, label: 'Someone’s own (works only for them)' }));
+  return [...list.map((o) => ({ value: o.value, label: `${o.label} (works only for you)` })), ...others];
 }
 
 function asInputString(v: unknown): string {

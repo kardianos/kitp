@@ -24,7 +24,12 @@ items in the account's own order.
 - **Filter:** every task and thread filter has **On my watch list** — *Any of
   my lists* (`@me`) or particular lists, *in* / *not in* — usually with the
   screen's *Active* phase. Calendar feeds and notification subscriptions
-  take it too (they compile the same filter).
+  take it too (they compile the same filter). On a shared screen your
+  lists say *(works only for you)*: a view for everyone is read by every
+  viewer, and a particular list of yours names nothing for them (W7), so
+  *Save current as new view…* with one asks to save it as your own view
+  instead; *Save as my view…* keeps it. Only *Any of my lists* goes in a
+  view for everyone.
 
 ## Decisions
 
@@ -37,7 +42,7 @@ items in the account's own order.
 | W5 | Only tasks and threads (`comm`) go on a list, and only ones the caller can see, outside switched-off areas. `watch.items` skips (doesn't remove) entries the caller can no longer see. |
 | W6 | Order is a fractional `sort_order` the client computes between the item's new neighbours (midpoint, or one past an end), as the inbox's `user_card_sort` does; a new item goes to the top (below the lowest). |
 | W7 | Filter leaf `{attr: "watch_list", op: "in" \| "not in", values}`: values are list ids, or a person id meaning any of that person's lists — what `@me` resolves to — so a shared screen filtered on *Any of my lists* shows each viewer their own. Both compilers (`card_compile_predicate.sql`, `where.go` `compileWatchLeaf`) emit `watched_on(c.id, ARRAY[…], <viewer person>)`, which only counts lists private to the viewer (the person the tree is evaluated for: the caller, a calendar's or subscription's owner) — another person's id or list id names nothing (review 2026-11-03 #8). |
-| W8 | The filter's option list and "Me" label are data (`attribute-schema.ts`): the field's `meLabel` ("Any of my lists"; person fields keep "Me"), and `DERIVED_OPTION_SOURCES` says its options come from `watch_list.list`, loaded by both the screen filter bar and the standalone filter loader. |
+| W8 | The filter's option list and "Me" label are data (`attribute-schema.ts`): the field's `meLabel` ("Any of my lists"; person fields keep "Me"), and `DERIVED_OPTION_SOURCES` says its options come from `watch_list.list`, loaded by both the screen filter bar and the standalone filter loader. The field is `perViewer` (its values are each viewer's own private cards). The builder takes `shared` — the filter is read by others: the filter bar on a shared screen, the admin view editor for a view that isn't someone's own — and then labels your lists *(works only for you)* and keeps a stored list that isn't yours visible (*Someone's own*) so it can be taken out. `perViewerLeaves` finds the leaves naming particular lists; the filter bar checks it on *Save current as new view…* and offers your own view instead. Calendars, subscriptions and personal screens are read as their owner and aren't `shared`. |
 | W9 | Which detail pages show the bookmarks is the detail profile's `watch` flag (task, comm), not a branch in TaskDetail. |
 | W10 | The marks ride on the rows: `card.select_with_attributes` takes `with_watch` and adds each row's `watch` (`watch_marks`: the caller's own live lists it is on, `[{id, symbol, title}]` by list id, omitted on none), as `with_approvals` adds `approvals`. The Grid, list and Kanban queries always ask; it isn't a screen column, since the marks are each viewer's own. |
 

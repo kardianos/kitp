@@ -26,7 +26,7 @@
 
 import type { AttributeDefRow } from '../admin/specs.js';
 import { LINK_KINDS, LINK_STATES } from '../task-detail/link-specs.js';
-import { type Op, type ValueType, opsForValueType } from './predicate.js';
+import { type Op, type Predicate, type PredicateLeaf, type ValueType, ME_REF_TOKEN, opsForValueType } from './predicate.js';
 import { watchListOptions } from '../watch/specs.js';
 
 /* -------------------------------------------------------------------------- */
@@ -67,6 +67,12 @@ export interface AttrSchema {
    *  leads its picker ("Me" for a person; "Any of my lists" for a watch
    *  list). Person fields get "Me" without saying so. */
   meLabel?: string;
+  /** Its values are each viewer's own private cards (watch lists), which name
+   *  nothing for anyone else (docs/WATCH_LISTS.md W7): only the `@me` option
+   *  works for everyone. A builder for a shared view says so on the options
+   *  (PredicateFilter `shared`), and a shared save checks
+   *  {@link perViewerLeaves}. */
+  perViewer?: boolean;
 }
 
 /**
@@ -198,6 +204,7 @@ const WATCH_LIST_FIELD: AttrSchema = {
   ops: ['in', 'notIn'],
   sortable: false,
   meLabel: 'Any of my lists',
+  perViewer: true,
 };
 
 /** "Project" (docs/PERSONAL_SCREENS.md): the card's enclosing project, in /
@@ -362,4 +369,16 @@ export function opsForAttr(a: AttrSchema): readonly Op[] {
 /** Look up one schema entry by attribute name. */
 export function findAttr(schema: readonly AttrSchema[], name: string): AttrSchema | undefined {
   return schema.find((a) => a.name === name);
+}
+
+/**
+ * The leaves of [p] that name particular values of a
+ * {@link AttrSchema.perViewer} field — anything but `@me`. Those are one
+ * person's own cards, so a view other people read can't use them.
+ */
+export function perViewerLeaves(p: Predicate | null, schema: readonly AttrSchema[]): PredicateLeaf[] {
+  if (p === null) return [];
+  if (p.kind === 'group') return p.children.flatMap((c) => perViewerLeaves(c, schema));
+  if (findAttr(schema, p.attr)?.perViewer !== true) return [];
+  return (p.values ?? []).some((v) => String(v) !== ME_REF_TOKEN) ? [p] : [];
 }

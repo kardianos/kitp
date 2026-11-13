@@ -47,6 +47,9 @@ export interface CardInsertInput {
   attributes?: Record<string, unknown>;
   /** Optional initial phase (triage|active|terminal). */
   phase?: string;
+  /** A saved view (filter card) only you see: "Save as my view…" on a shared
+   *  screen (docs/PERSONAL_SCREENS.md). */
+  private?: boolean;
 }
 
 export interface CardInsertOutput {
@@ -122,6 +125,7 @@ export function registerProjectSpecs(api: Api): void {
         m['attributes'] = i.attributes;
       }
       if (i.phase !== undefined && i.phase !== '') m['phase'] = i.phase;
+      if (i.private === true) m['private'] = true;
       return m;
     },
     decode: (raw): CardInsertOutput => ({ id: asId(asObj(raw)['id']) }),
