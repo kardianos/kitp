@@ -29,6 +29,10 @@ export interface LoadRefOptionsArgs {
   cardType: string;
   /** The project whose value cards (statuses, tags, …) populate the pickers. */
   projectId: string;
+  /** With no project: offer every visible project's value cards instead of
+   *  none — a filter that spans projects (a calendar feed), like the filter
+   *  bar on a personal screen. */
+  acrossProjects?: boolean;
   /** Tree path the option map lands at (the PredicateFilter's optionsPath). */
   optionsPath: string[];
   alive: () => boolean;
@@ -59,9 +63,10 @@ export function loadRefOptions(ctx: ControlContext, args: LoadRefOptionsArgs): v
       const trow = types.find((t) => t.name === target);
       const projectScoped =
         projectType !== undefined && trow !== undefined && trow.parent_card_type_id === projectType.id;
-      if (projectScoped && (args.projectId === '' || args.projectId === '0')) continue;
+      const noProject = args.projectId === '' || args.projectId === '0';
+      if (projectScoped && noProject && args.acrossProjects !== true) continue;
       const input: Record<string, unknown> = { cardTypeName: target };
-      if (projectScoped) input['parentCardId'] = args.projectId;
+      if (projectScoped && !noProject) input['parentCardId'] = args.projectId;
       ctx.api.callByName(
         'card.select_with_attributes',
         input,

@@ -2,10 +2,10 @@
  * AccountCalendars — the CALENDARS section of the Account page
  * (docs/MAIL_INTAKE_AND_CALENDARS.md §8): the person's calendar feeds.
  *
- * Each calendar has a name, a filter (presets, or the screen-filter JSON
- * with '@me' = you) and a window of days around today; tasks you can see
- * with a due date in the window show as all-day events linking to the
- * task. A calendar has any number of secret URLs, each with a comment
+ * Each calendar has a name, a filter (a preset, or one built in the shared
+ * PredicateFilter — never typed as JSON; "Me" = you) and a window of days
+ * around today; tasks you can see with a due date in the window show as
+ * all-day events linking to the task. A calendar has any number of secret URLs, each with a comment
  * ("iPhone", "Google work") and its last fetch (when, which app, any
  * error), so one can be revoked alone. A new URL is shown ONCE, with how to
  * add it to Google Calendar, Outlook and Apple Calendar. "Detailed steps"
@@ -17,6 +17,8 @@
 import { Control, type BaseControlConfig } from '../core/control.js';
 import type { ApiFault } from '../core/dispatch.js';
 import { faultText } from '../admin/record-form.js';
+import { predicateFromJsonString, predicateToJsonString, type Predicate } from '../filter/predicate.js';
+import { loadRefOptions } from '../filter/ref-options.js';
 import {
   MAILIN_SPEC,
   calendarURL,
@@ -51,18 +53,28 @@ export const CALENDAR_FILTERS: ReadonlyArray<{ key: string; label: string; json:
   },
 ];
 
+/** A stored filter in one spelling ('' = none), so a built filter that says
+ *  the same as a preset is that preset; null when it doesn't parse. */
+function canonicalFilter(json: string): string | null {
+  if (json.trim() === '') return '';
+  const p = predicateFromJsonString(json);
+  return p === null ? null : predicateToJsonString(p);
+}
+
 /** Which preset a stored filter is ('custom' when none matches). */
 export function filterPreset(json: string): string {
-  const norm = (s: string): string => {
-    try {
-      return s.trim() === '' ? '' : JSON.stringify(JSON.parse(s));
-    } catch {
-      return s;
-    }
-  };
-  const n = norm(json);
-  return CALENDAR_FILTERS.find((p) => norm(p.json) === n)?.key ?? 'custom';
+  const n = canonicalFilter(json);
+  if (n === null) return 'custom';
+  return CALENDAR_FILTERS.find((p) => canonicalFilter(p.json) === n)?.key ?? 'custom';
 }
+
+/** A preset's stored filter ('' for an unknown key). */
+function presetJSON(key: string): string {
+  return CALENDAR_FILTERS.find((p) => p.key === key)?.json ?? '';
+}
+
+/** Where the custom-filter builder keeps its predicate and picker options. */
+const FILTER_PATH = ['account', 'calendars', 'filter'];
 
 /** How to add a feed URL, per calendar app. */
 export const CALENDAR_APP_STEPS: ReadonlyArray<readonly [string, string]> = [
@@ -75,7 +87,6 @@ interface Edit {
   id: string;
   title: string;
   preset: string;
-  custom: string;
   pastDays: string;
   futureDays: string;
   error: string;
@@ -96,6 +107,11 @@ export class AccountCalendars extends Control<AccountCalendarsConfig> {
   private newURLComment = new Map<string, string>();
   private confirm = '';
   private error = '';
+  /** The custom-filter builder and its host, kept across repaints while the
+   *  form shows it (it holds the filter being built). */
+  private builder: Control | null = null;
+  private builderHost: HTMLElement | null = null;
+  private optionsLoaded = false;
 
   protected override createRoot(): HTMLElement {
     const el = document.createElement('div');
@@ -136,6 +152,7 @@ export class AccountCalendars extends Control<AccountCalendarsConfig> {
   /* -------------------------------- painting ------------------------------- */
 
   private paint(): void {
+    if (this.edit === null || this.edit.preset !== 'custom') this.dropBuilder();
     const intro = el(
       'p',
       'mi-hint',
@@ -282,31 +299,35 @@ export class AccountCalendars extends Control<AccountCalendarsConfig> {
     box.append(labelled('Name', this.input(e.title, (v) => (e.title = v), 'title'), 'What calendar apps show it as.'));
     const sel = document.createElement('select');
     sel.dataset.field = 'preset';
-    for (const p of [...CALENDAR_FILTERS, { key: 'custom', label: 'Custom filter (JSON)', json: '' }]) {
+    for (const p of [...CALENDAR_FILTERS, { key: 'custom', label: 'Custom filter…', json: '' }]) {
       const o = document.createElement('option');
       o.value = p.key;
       o.textContent = p.label;
       o.selected = p.key === e.preset;
       sel.append(o);
     }
+    sel.value = e.preset;
     this.listen(sel, 'change', () => {
+      // A custom filter starts from the preset picked so far, to narrow it.
+      if (sel.value === 'custom' && e.preset !== 'custom') this.seedBuilder(presetJSON(e.preset));
       e.preset = sel.value;
       this.paint();
     });
     box.append(labelled('Tasks', sel));
     if (e.preset === 'custom') {
-      const t = document.createElement('textarea');
-      t.rows = 4;
-      t.value = e.custom;
-      t.dataset.field = 'custom';
-      this.listen(t, 'input', () => (e.custom = t.value));
-      box.append(
-        labelled(
-          'Filter',
-          t,
-          'The screen-filter JSON, e.g. {"connective":"and","children":[{"attr":"assignee","op":"eq","values":["@me"]}]}. "@me" is you. Status values differ per project, so filter on phase (has_phase) to span projects.',
+      // Not a <label>: the builder has many controls of its own.
+      const row = el('div', 'mi-field');
+      row.dataset.calendarFilter = '';
+      row.append(
+        el('span', 'mi-field__label', 'Filter'),
+        this.filterBuilder(),
+        el(
+          'span',
+          'mi-hint',
+          '“Me” is you. Statuses belong to one project, so to span projects use Status → has phase.',
         ),
       );
+      box.append(row);
     }
     const past = this.input(e.pastDays, (v) => (e.pastDays = v), 'pastDays');
     past.inputMode = 'numeric';
@@ -334,11 +355,11 @@ export class AccountCalendars extends Control<AccountCalendarsConfig> {
   private openEdit(c: CalendarRow | null): void {
     this.minted = null;
     const preset = c === null ? 'mine' : filterPreset(c.predicate);
+    this.seedBuilder(preset === 'custom' ? (c?.predicate ?? '') : '');
     this.edit = {
       id: c?.id ?? '',
       title: c?.title ?? 'My due dates',
       preset,
-      custom: preset === 'custom' ? (c?.predicate ?? '') : '',
       pastDays: String(c?.pastDays ?? 30),
       futureDays: String(c?.futureDays ?? 365),
       error: '',
@@ -355,7 +376,10 @@ export class AccountCalendars extends Control<AccountCalendarsConfig> {
       this.paint();
       return;
     }
-    const predicate = e.preset === 'custom' ? e.custom.trim() : (CALENDAR_FILTERS.find((p) => p.key === e.preset)?.json ?? '');
+    const predicate =
+      e.preset === 'custom'
+        ? predicateToJsonString(this.ctx.tree.at([...FILTER_PATH, 'value']).peek<Predicate | null>() ?? null)
+        : presetJSON(e.preset);
     const input: Record<string, unknown> = { title: e.title.trim(), predicate, pastDays: past, futureDays: future };
     if (e.id !== '') input['id'] = e.id;
     e.busy = true;
@@ -371,6 +395,50 @@ export class AccountCalendars extends Control<AccountCalendarsConfig> {
       },
       { alive: () => this.isAlive(), onErr: this.fail },
     );
+  }
+
+  /* ----------------------------- filter builder ---------------------------- */
+
+  /** Start the builder over from [json] (it reads its value once, at mount). */
+  private seedBuilder(json: string): void {
+    this.dropBuilder();
+    this.ctx.tree.at([...FILTER_PATH, 'value']).set(predicateFromJsonString(json));
+  }
+
+  /** The shared PredicateFilter over tasks, made once per edit and re-placed
+   *  on each repaint. Its pickers offer every project's statuses, milestones
+   *  and tags: a calendar spans projects. */
+  private filterBuilder(): HTMLElement {
+    if (this.builderHost !== null) return this.builderHost;
+    const host = el('div', 'mi-filter-builder');
+    this.builderHost = host;
+    this.builder = this.spawn(
+      'PredicateFilter',
+      {
+        type: 'PredicateFilter',
+        valuePath: [...FILTER_PATH, 'value'].join('.'),
+        schema: { cardType: 'task' },
+        optionsPath: [...FILTER_PATH, 'options'].join('.'),
+      },
+      host,
+    );
+    if (!this.optionsLoaded) {
+      this.optionsLoaded = true;
+      loadRefOptions(this.ctx, {
+        cardType: 'task',
+        projectId: '',
+        acrossProjects: true,
+        optionsPath: [...FILTER_PATH, 'options'],
+        alive: () => this.isAlive(),
+      });
+    }
+    return host;
+  }
+
+  private dropBuilder(): void {
+    if (this.builder !== null) this.destroyChild(this.builder);
+    this.builder = null;
+    this.builderHost = null;
   }
 
   private mintURL(calendarId: string): void {

@@ -13,7 +13,7 @@ A calendar shows the tasks **you can see** that have a due date in a window arou
 | Setting | What it does |
 | ------- | ------------ |
 | **Name** | What calendar apps call it. |
-| **Tasks** | *Every task I can see*, *Assigned to me*, *Assigned to me, not done*, or a custom filter (the screen-filter JSON, where `"@me"` is you). Status values differ per project, so to span projects filter on phase (`has_phase` with `triage` / `active`). |
+| **Tasks** | *Every task I can see*, *Assigned to me*, *Assigned to me, not done*, or *Custom filter…*, which opens the same filter builder as a screen's **Advanced** panel, starting from the preset you had picked. *Me* is you. Statuses belong to one project, so to span projects use **Status → has phase** (*Triage*, *Active*); **Project** narrows it to some projects. |
 | **Days back / Days ahead** | The window: tasks whose days fall between this many days ago and this many days ahead (0–3650; defaults 30 and 365) — a long task running through the window counts. |
 
 Each event's title is `#123 Title` (✓ in front once the task is done); its description names the project and status and links to the task. Events are marked *free*, so tasks don't block your day.

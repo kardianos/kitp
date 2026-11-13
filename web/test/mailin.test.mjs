@@ -130,8 +130,12 @@ test('the Comm log lists the relay and attachment kinds', () => {
 
 test('calendar filter presets', () => {
   assert.equal(M.filterPreset(''), 'all');
+  assert.equal(M.filterPreset('{"connective":"and","children":[]}'), 'all');
   assert.equal(M.filterPreset(M.CALENDAR_FILTERS[1].json), 'mine');
+  // What the builder writes for the same filter ("=" for "eq") is the preset.
+  assert.equal(M.filterPreset('{"connective":"and","children":[{"attr":"assignee","op":"=","values":["@me"]}]}'), 'mine');
   assert.equal(M.filterPreset('{"connective":"or","children":[]}'), 'custom');
+  assert.equal(M.filterPreset('not json'), 'custom');
 });
 
 test('normalizeStatus fills every field', () => {
@@ -325,4 +329,113 @@ test('AccountCalendars lists calendars, makes a URL and explains how to add it',
   } finally {
     delete globalThis.location;
   }
+});
+
+test('AccountCalendars builds a custom filter in the shared builder, never as JSON', async () => {
+  const ATTR_DEFS = [
+    { id: '5', name: 'status', value_type: 'card_ref', target_card_type_name: 'status', bound_to: [{ card_type_id: '2', card_type_name: 'task', ordering: 1 }] },
+    { id: '6', name: 'assignee', value_type: 'card_ref', target_card_type_name: 'person', bound_to: [{ card_type_id: '2', card_type_name: 'task', ordering: 2 }] },
+  ];
+  const CARD_TYPES = [
+    { id: '1', name: 'project' },
+    { id: '2', name: 'task', parent_card_type_id: '1' },
+    { id: '6', name: 'status', parent_card_type_id: '1' },
+    { id: '8', name: 'person' },
+  ];
+  let calendars = [];
+  const t = transport({
+    'calendar.list': () => ({ calendars }),
+    'attribute_def.select': () => ({ rows: ATTR_DEFS }),
+    'card_type.select': () => ({ rows: CARD_TYPES }),
+    'card.select_with_attributes': (d) =>
+      d.card_type_name === 'status'
+        ? { rows: [{ id: '61', card_type_id: '6', attributes: { title: 'Doing' } }] }
+        : { rows: [{ id: '81', card_type_id: '8', attributes: { title: 'Ada' } }] },
+    'watch_list.list': () => ({ lists: [] }),
+    'calendar.set': (d) => {
+      calendars = [{ id: '5', title: d.title, predicate: d.predicate, past_days: d.past_days, future_days: d.future_days, urls: [] }];
+      return { id: '5' };
+    },
+  });
+  const { dispatcher, api } = boot(t);
+  M.registerKanbanSpecs(api);
+  M.registerFilterSpecs(api);
+  M.registerWatchSpecs(api);
+  M.registerPredicateFilter();
+  const { ctrl } = mount(api, 'AccountCalendars', {});
+  await settle(dispatcher);
+
+  ctrl.el.querySelector('[data-calendar-add]').dispatchEvent({ type: 'click' });
+  const form = () => ctrl.el.querySelector('[data-calendar-form]');
+  const preset = form().querySelector('[data-field="preset"]');
+  assert.equal(preset.value, 'mine');
+  for (const o of preset.children) assert.doesNotMatch(o.textContent, /JSON/);
+
+  // Custom starts the builder from the preset picked so far.
+  preset.value = 'custom';
+  preset.dispatchEvent({ type: 'change' });
+  await settle(dispatcher);
+  assert.equal(form().querySelector('TEXTAREA'), null, 'no JSON box');
+  const pf = () => form().querySelector('[data-calendar-filter]').findByControl('PredicateFilter')[0];
+  assert.ok(pf(), 'the shared PredicateFilter mounts');
+  // (the DOM shim's <select> reports its picked option, not .value)
+  const picked = (sel) => sel.children.find((o) => o.selected)?.value;
+  assert.equal(picked(pf().querySelector('[data-pred-attr]')), 'assignee');
+  const me = pf().querySelector('[data-pred-ref-me]');
+  assert.ok(me.selected, '"Me" is picked');
+  // A calendar spans projects: statuses load from every project.
+  const statusLoad = t.sent.find((s) => s.key === 'card.select_with_attributes' && s.data.card_type_name === 'status');
+  assert.ok(statusLoad, 'statuses load');
+  assert.equal(statusLoad.data.parent_card_id, undefined);
+
+  // Narrow it: status has phase Active.
+  const root = pf().querySelectorAll('[data-pred-add-leaf]')[0];
+  root.dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  const leaf = pf().querySelectorAll('[data-pred-leaf]')[1];
+  const attr = leaf.querySelector('[data-pred-attr]');
+  attr.value = 'status';
+  attr.dispatchEvent({ type: 'change' });
+  M.flushSync?.();
+  const op = pf().querySelectorAll('[data-pred-leaf]')[1].querySelector('[data-pred-op]');
+  op.value = 'hasPhase';
+  op.dispatchEvent({ type: 'change' });
+  M.flushSync?.();
+  const active = pf()
+    .querySelectorAll('[data-pred-leaf]')[1]
+    .querySelectorAll('INPUT')
+    .find((i) => i.getAttribute('aria-label') === 'Active');
+  active.checked = true;
+  active.dispatchEvent({ type: 'change' });
+
+  // The builder survives a repaint (a failed save keeps the form).
+  const days = form().querySelector('[data-field="pastDays"]');
+  days.value = 'x';
+  days.dispatchEvent({ type: 'input' });
+  form().querySelector('[data-calendar-save]').dispatchEvent({ type: 'click' });
+  assert.match(form().textContent, /whole numbers/);
+  assert.equal(pf().querySelectorAll('[data-pred-leaf]').length, 2);
+  form().querySelector('[data-field="pastDays"]').value = '7';
+  form().querySelector('[data-field="pastDays"]').dispatchEvent({ type: 'input' });
+
+  form().querySelector('[data-calendar-save]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  const set = t.sent.find((s) => s.key === 'calendar.set');
+  assert.deepEqual(JSON.parse(set.data.predicate), {
+    connective: 'and',
+    children: [
+      { attr: 'assignee', op: '=', values: ['@me'] },
+      { attr: 'status', op: 'has_phase', values: ['active'] },
+    ],
+  });
+  assert.equal(set.data.past_days, 7);
+  const cal = ctrl.el.querySelector('[data-calendar="5"]');
+  assert.match(cal.textContent, /Custom filter/);
+  assert.equal(ctrl.el.querySelector('[data-calendar-filter]'), null, 'the builder goes with the form');
+
+  // Editing it again shows the filter in the builder.
+  cal.querySelectorAll('BUTTON').find((b) => b.textContent === 'Edit').dispatchEvent({ type: 'click' });
+  assert.equal(picked(form().querySelector('[data-field="preset"]')), 'custom');
+  assert.equal(pf().querySelectorAll('[data-pred-leaf]').length, 2);
+  assert.equal(picked(pf().querySelectorAll('[data-pred-leaf]')[1].querySelector('[data-pred-op]')), 'hasPhase');
 });
