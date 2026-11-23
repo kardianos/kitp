@@ -1646,6 +1646,17 @@ JOIN attribute_def ad ON ad.name = 'due_date'
 WHERE ct.name = 'milestone'
 ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;`,
 	},
+	{
+		// The OAuth client kitp trusts out of the box (Claude Code's), for
+		// installs seeded before oauth_client existed (docs/MCP_OAUTH.md).
+		// Idempotent — ON CONFLICT DO NOTHING makes it a no-op on a fresh DB
+		// whose seed has the row, and keeps an admin's later choice.
+		id: "0048_oauth_clients",
+		sql: `
+INSERT INTO oauth_client (client_id, allowed)
+VALUES ('https://claude.ai/oauth/claude-code-client-metadata', true)
+ON CONFLICT (client_id) DO NOTHING;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

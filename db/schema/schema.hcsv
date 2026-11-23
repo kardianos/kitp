@@ -70,7 +70,7 @@ expires_at, timestamptz, , false,
 name, columns
 oidc_state_expires_at, "expires_at"
 
-## table user_token | doc="Opaque bearer tokens that authenticate an MCP (or future remote) client AS a specific user_account row. Typical use: a human mints a token bound to one of their agent user_accounts, hands it to the MCP client out-of-band. The token is 32 random bytes base64url-encoded — same shape as the session cookie — with nothing meaningful embedded; `id` stores only its SHA-256 hex (auth.HashSecret), so the token is shown once at creation and can't be read back. last_used_at participates in the same batched-touch pattern as session.last_seen_at. ON DELETE CASCADE so revoking the agent user_account row revokes every token bound to it. label is required and unique per user so user_token.list / user_token.revoke can address rows without leaking the secret value back to the wire — list returns labels + timestamps, revoke takes (user_id, label). scope narrows what the token may do: '' = unrestricted (MCP + every bearer route); 'links' = only the forge link hook (POST /api/v1/links) — the credential a code forge holds. The api.Router enforces it per route." | unique="user_id, label"
+## table user_token | doc="Opaque bearer tokens that authenticate an MCP (or future remote) client AS a specific user_account row. Typical use: a human mints a token bound to one of their agent user_accounts, hands it to the MCP client out-of-band. The token is 32 random bytes base64url-encoded — same shape as the session cookie — with nothing meaningful embedded; `id` stores only its SHA-256 hex (auth.HashSecret), so the token is shown once at creation and can't be read back. last_used_at participates in the same batched-touch pattern as session.last_seen_at. ON DELETE CASCADE so revoking the agent user_account row revokes every token bound to it. label is required and unique per user so user_token.list / user_token.revoke can address rows without leaking the secret value back to the wire — list returns labels + timestamps, revoke takes (user_id, label). scope narrows what the token may do: '' = unrestricted (MCP + every bearer route); 'links' = only the forge link hook (POST /api/v1/links) — the credential a code forge holds; 'mcp' = only the MCP endpoint (POST /api/v1/mcp) — the access token an OAuth client holds (oauth_grant, docs/MCP_OAUTH.md), which keeps its row but has its id replaced on every refresh. The api.Router enforces it per route." | unique="user_id, label"
 
 ### columns
 name, type, pk, nullable, default, references, on_delete
@@ -87,6 +87,80 @@ scope, text, , false, '', ,
 name, columns
 user_token_user_id, "user_id"
 user_token_last_used_at, "last_used_at"
+
+## table oauth_grant | doc="One OAuth connection from an MCP client (Claude) to kitp (internal/auth/oauth, docs/MCP_OAUTH.md). A person signs in, picks one of their agents on the consent page, and the client then acts as that agent. The access token the client holds IS a user_token row of that agent with scope 'mcp' — (user_id, token_label) names it, so the connection shows in the agent's token list and revoking it there ends the connection; each refresh replaces that row's id with the new token's hash. Its refresh tokens are in oauth_refresh_token. refreshed_at is the last refresh: a connection idle for 90 days ends. expires_at bounds the whole connection (KITP_TOKEN_MAX_DAYS; null = no cap). Rows revoked, expired or idle are deleted by the oauth.reap job, with their user_token."
+
+### columns
+name, type, pk, unique, nullable, default, references, on_delete
+id, bigserial, true, , , , , 
+user_id, bigint, , , false, , user_account.id, cascade
+approved_by, bigint, , , false, , user_account.id, cascade
+client_id, text, , , false, , , 
+token_label, text, , , false, , , 
+created_at, timestamptz, , , false, now(), , 
+refreshed_at, timestamptz, , , , , , 
+expires_at, timestamptz, , , , , , 
+revoked_at, timestamptz, , , , , , 
+
+### indexes
+name, columns
+oauth_grant_user_id, "user_id"
+
+## table oauth_refresh_token | doc="The refresh tokens of an OAuth connection (oauth_grant), as a chain: `hash` is the SHA-256 hex of each. Exactly one per grant is current (spent_at and orphaned_at both null). Presenting the current one spends it (spent_at) and issues its successor. Presenting a spent one again within two minutes, while its successor is still current and so never presented, is a client retrying after a lost reply: the successor is orphaned (orphaned_at) and a new one issued. Any other reuse — a spent token later, a spent token whose successor was used, or an orphaned token at any time — means two parties hold the connection's tokens, and the grant is revoked (OAuth 2.1 §4.3.1). Rows go with their grant; the oauth.reap job deletes spent and orphaned ones after 30 days."
+
+### columns
+name, type, pk, nullable, default, references, on_delete
+hash, text, true, , , , 
+grant_id, bigint, , false, , oauth_grant.id, cascade
+issued_at, timestamptz, , false, now(), , 
+spent_at, timestamptz, , , , , 
+orphaned_at, timestamptz, , , , , 
+successor, text, , , , , 
+
+### indexes
+name, columns, unique, where
+oauth_refresh_token_grant_id, "grant_id", , 
+oauth_refresh_token_current, "grant_id", true, "spent_at IS NULL AND orphaned_at IS NULL"
+
+## table oauth_client | doc="The OAuth clients kitp trusts to sign members in to MCP (internal/auth/oauth, docs/MCP_OAUTH.md). An MCP client such as Claude names itself with a client_id that is an HTTPS URL serving its details (a Client ID Metadata Document); kitp fetches it only when a row here with allowed=true matches. `client_id` is an exact client_id, or a prefix ending in / that covers every client_id under it — kept to https, a lower-case DNS host and a path (oauth_client_set_batch). Seeded with Claude Code's. When a member asks for a client that isn't trusted (the 'Ask an administrator' button), it is recorded here with allowed=false: requested_by is the member who last asked, requested_at when, request_count how often, redirect_uri where the app asked to return. An admin allows or disallows it on the MCP apps screen (oauth_client.set), recorded in decided_by / decided_at; disallowing ends the client's connections at their next refresh. At most 200 requests are recorded, 10 per member."
+
+### columns
+name, type, pk, unique, nullable, default, references, on_delete
+id, bigserial, true, , , , , 
+client_id, text, , true, false, , , 
+allowed, boolean, , , false, false, , 
+redirect_uri, text, , , false, '', , 
+requested_by, bigint, , , , , user_account.id, set null
+requested_at, timestamptz, , , , , , 
+request_count, int, , , false, 0, , 
+decided_by, bigint, , , , , user_account.id, set null
+decided_at, timestamptz, , , , , , 
+created_at, timestamptz, , , false, now(), , 
+
+### indexes
+name, columns
+oauth_client_requested_by, "requested_by"
+
+## table oauth_code | doc="Authorization codes from the OAuth consent page (internal/auth/oauth): `id` is the SHA-256 hex of the code handed to the client's redirect URI. A code lives a few minutes and is good once: the token endpoint sets used_at and records the grant it made (grant_id), so a code presented again revokes that grant (RFC 6749 §4.1.2). user_id is the agent the person chose, approved_by the person; code_challenge is the PKCE S256 challenge; resource the MCP server URL the token is for. Rows past expires_at are deleted by the oauth.reap job."
+
+### columns
+name, type, pk, nullable, default, references, on_delete
+id, text, true, , , ,
+user_id, bigint, , false, , user_account.id, cascade
+approved_by, bigint, , false, , user_account.id, cascade
+client_id, text, , false, , ,
+client_name, text, , false, '', ,
+redirect_uri, text, , false, , ,
+code_challenge, text, , false, , ,
+resource, text, , false, '', ,
+created_at, timestamptz, , false, now(), ,
+expires_at, timestamptz, , false, , ,
+used_at, timestamptz, , , , ,
+grant_id, bigint, , , , oauth_grant.id, cascade
+
+### indexes
+name, columns
+oauth_code_expires_at, "expires_at"
 
 ## table user_card_agent | doc="Per-(parent-user, card) routing of a task to one of the parent's agents. The parent owns the assignment; other users in the project never see it. The agent's inbox query joins this table on `agent_user_id = me AND user_id = my_parent`. PK (user_id, card_id) limits one card to one routed agent per parent — sufficient for 'alice has card 42 routed to her research agent' without enabling cross-agent fan-out, which would just be confusing." | primary_key="user_id, card_id"
 
@@ -939,6 +1013,9 @@ idx_theme_file_cas, "cas_address"
 ## function user_role_set_batch | doc="user_role.set — upsert a (user_id, role, scope_card_id) grant against the partial unique indexes." | path="functions/user_role_set_batch.sql"
 ## function user_role_revoke_batch | doc="user_role.revoke — delete a (user_id, role, scope_card_id) grant matching NULL-or-equal scope." | path="functions/user_role_revoke_batch.sql"
 ## function user_role_list_batch | doc="user_role.list — list (role_name, scope_project_id) tuples held by one user." | path="functions/user_role_list_batch.sql"
+## function oauth_client_list_batch | doc="oauth_client.list — every trusted OAuth client (exact client_id or / prefix) and every member's request for one, with who asked and who decided. Waiting requests first, newest first." | path="functions/oauth_client_list_batch.sql"
+## function oauth_client_set_batch | doc="oauth_client.set — allow or disallow one OAuth client, by row id or by client_id (an exact client_id or a prefix ending in /; a new one is added); records who decided." | path="functions/oauth_client_set_batch.sql"
+## function oauth_client_delete_batch | doc="oauth_client.delete — remove one OAuth client row by id; reports the deleted count." | path="functions/oauth_client_delete_batch.sql"
 ## function role_mapping_set_batch | doc="role_mapping.set — upsert one (claim_value -> role_id) mapping on the claim_value PK." | path="functions/role_mapping_set_batch.sql"
 ## function role_mapping_delete_batch | doc="role_mapping.delete — delete one role_mapping row by claim_value; reports per-row deleted count." | path="functions/role_mapping_delete_batch.sql"
 ## function file_create_batch | doc="file.create — validate filename + chunk list and INSERT file row + file_chunk[] per input. Filename normalisation (NFC + bidi/zero-width strip + trim) runs Go-side via CreateInput.UnmarshalJSON; the function handles only the cheap presence/extension gates + DB writes." | path="functions/file_create_batch.sql"

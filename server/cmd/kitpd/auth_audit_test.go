@@ -33,8 +33,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/auth/oauth"
 	"github.com/kitp/kitp/server/internal/auth/oidc"
 	"github.com/kitp/kitp/server/internal/auth/session"
 	"github.com/kitp/kitp/server/internal/cas"
@@ -81,6 +84,14 @@ func TestAuthAudit(t *testing.T) {
 	// doesn't care whether the OIDC OP is reachable.
 	oidc.Mount(rt, oidc.BFFConfig{})
 	mcp.Mount(rt, mcp.HTTPConfig{})
+	// OAuth sign-in for MCP clients: discovery documents, the consent
+	// page and the token endpoint, all Public. The pool is never used —
+	// Mount only registers.
+	oauthSrv, err := oauth.New(oauth.Config{PublicURL: "https://kitp.example", Pool: new(pgxpool.Pool), Session: stub})
+	if err != nil {
+		t.Fatalf("oauth.New: %v", err)
+	}
+	oauthSrv.Mount(rt, http.NewServeMux())
 	cas.Mount(rt, cas.HTTPConfig{})
 	attachment.Mount(rt, attachment.Config{})
 	domlink.Mount(rt, domlink.HTTPConfig{})

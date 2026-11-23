@@ -24,6 +24,7 @@ package api
 
 import (
 	"net/http"
+	"regexp"
 	"strings"
 )
 
@@ -100,3 +101,33 @@ func buildCSP(reporter string) string {
 	}
 	return strings.Join(directives, "; ")
 }
+
+// AllowFormAction widens form-action on this response's policy (set by
+// the CSP middleware before the handler runs) to the given origins. A
+// page whose form posts to kitp and is then redirected elsewhere needs
+// it: browsers apply form-action to the redirect too, so the OAuth
+// consent page (internal/auth/oauth) lists the client's redirect origin
+// here or its Allow button would go nowhere. Only an origin shaped
+// https://dns-name[:port], or http://localhost / 127.0.0.1[:port], is
+// added; anything else (a wildcard, an IP, a stray directive) is skipped.
+func AllowFormAction(w http.ResponseWriter, origins ...string) {
+	var add []string
+	for _, o := range origins {
+		if formActionOrigin.MatchString(o) {
+			add = append(add, o)
+		}
+	}
+	if len(add) == 0 {
+		return
+	}
+	for _, name := range []string{"Content-Security-Policy", "Content-Security-Policy-Report-Only"} {
+		if v := w.Header().Get(name); v != "" {
+			w.Header().Set(name, strings.Replace(v, "form-action 'self'",
+				"form-action 'self' "+strings.Join(add, " "), 1))
+		}
+	}
+}
+
+// formActionOrigin is the origin shape AllowFormAction accepts.
+var formActionOrigin = regexp.MustCompile(
+	`^(https://([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]([a-z0-9-]*[a-z0-9])?|http://(localhost|127\.0\.0\.1))(:[0-9]{1,5})?$`)

@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>{{.Title}}</title>
+<link rel="stylesheet" href="/api/v1/oauth/consent.css">
+</head>
+<body>
+<main class="card">
+  <p class="brand">kitp</p>
+{{- with .Consent}}
+  <h1>Connect {{.ClientName}}</h1>
+  <p class="lede"><strong>{{.ClientName}}</strong> wants to work in kitp as one of your agents. It can do what that agent's roles allow, and everything it does is recorded as the agent, on your behalf.</p>
+  <form method="post" action="{{.Action}}">
+  {{- range .Hidden}}
+    <input type="hidden" name="{{.Name}}" value="{{.Value}}">
+  {{- end}}
+    <input type="hidden" name="consent_token" value="{{.Token}}">
+  {{- if .Agents}}
+    <fieldset class="agents">
+      <legend>Connect as</legend>
+    {{- range .Agents}}
+      <label class="agent">
+        <input type="radio" name="agent_id" value="{{.ID}}"{{if .Checked}} checked{{end}}>
+        <span class="agent-name">{{.Name}}</span>
+        {{- if .NoRoles}}<span class="agent-note">No roles yet, so it can't do anything</span>{{end}}
+      </label>
+    {{- end}}
+    </fieldset>
+  {{- else}}
+    <div class="empty">
+      <p><strong>You don't have any agents yet.</strong></p>
+      <p>An agent is a separate identity with the roles you choose, so {{.ClientName}} never acts as you. Create one under My Agents, give it roles, then connect again.</p>
+    </div>
+  {{- end}}
+  {{- if .Loopback}}
+    <p class="warn">This sends access to a program on this computer ({{.RedirectHost}}), such as Claude Code. Allow it only if you just started this connection yourself.</p>
+  {{- else}}
+    <p class="note">After you choose, you go back to <strong>{{.RedirectHost}}</strong>.</p>
+  {{- end}}
+    <div class="actions">
+      <button type="submit" name="decision" value="deny" class="secondary">Cancel</button>
+    {{- if .Agents}}
+      <button type="submit" name="decision" value="allow" class="primary">Allow</button>
+    {{- end}}
+    </div>
+  </form>
+  <p class="foot">Signed in as {{.Person}} · <a href="/agents" target="_blank" rel="noopener">Manage your agents</a></p>
+{{- else}}
+  <h1>{{.Title}}</h1>
+  <p class="lede">{{.Message}}</p>
+  {{- if .Detail}}
+  <p>{{.Detail}}</p>
+  {{- end}}
+  {{- if .LinkHref}}
+  <p><a class="button primary" href="{{.LinkHref}}">{{.LinkText}}</a></p>
+  {{- end}}
+  {{- with .Request}}
+  <form method="post" action="{{.Action}}">
+  {{- range .Hidden}}
+    <input type="hidden" name="{{.Name}}" value="{{.Value}}">
+  {{- end}}
+    <input type="hidden" name="consent_token" value="{{.Token}}">
+    <div class="actions">
+      <button type="submit" name="decision" value="request" class="primary">Ask an administrator</button>
+    </div>
+  </form>
+  {{- end}}
+{{- end}}
+</main>
+</body>
+</html>

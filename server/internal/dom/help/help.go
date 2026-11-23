@@ -41,6 +41,7 @@ var topicFiles = map[string]string{
 	"admin.attributes":     "content/admin_attributes.md",
 	"admin.roles":          "content/admin_roles.md",
 	"admin.oidc_claims":    "content/admin_oidc_claims.md",
+	"admin.mcp_apps":       "content/admin_mcp_apps.md",
 	"admin.users":          "content/admin_users.md",
 	"admin.contacts":       "content/admin_contacts.md",
 	"admin.agents":         "content/admin_agents.md",

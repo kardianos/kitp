@@ -48,6 +48,12 @@
 //	                            each task + the account page. Unset
 //	                            disables the links. Its origin is also
 //	                            trusted by the cross-origin (CSRF) check.
+//	                            KITP_PUBLIC_URL also turns on OAuth sign-in
+//	                            for remote MCP clients (Claude custom
+//	                            connectors): <base>/api/v1/mcp is the
+//	                            URL to give the client; which apps
+//	                            may sign in is the admin MCP apps screen
+//	                            (oauth_client); docs/MCP_OAUTH.md.
 //	KITP_TRUSTED_ORIGINS      — more origins (comma-separated
 //	                            scheme://host[:port]) the cross-origin check
 //	                            admits besides the request's own Host. The
@@ -98,6 +104,7 @@ import (
 
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/auth/oauth"
 	"github.com/kitp/kitp/server/internal/auth/oidc"
 	"github.com/kitp/kitp/server/internal/auth/session"
 	"github.com/kitp/kitp/server/internal/auth/token"
@@ -125,6 +132,7 @@ import (
 	domlink "github.com/kitp/kitp/server/internal/dom/link"
 	"github.com/kitp/kitp/server/internal/dom/mailin"
 	"github.com/kitp/kitp/server/internal/dom/myscreen"
+	"github.com/kitp/kitp/server/internal/dom/oauthclient"
 	"github.com/kitp/kitp/server/internal/dom/personemail"
 	domportal "github.com/kitp/kitp/server/internal/dom/portal"
 	"github.com/kitp/kitp/server/internal/dom/proc"
@@ -240,6 +248,7 @@ func registerHandlers(pool *store.Pool, storage *cas.Storage, mailStatus *mailin
 	usertoken.Register(pool)
 	usertoken.SetMaxDays(int64(envInt("KITP_TOKEN_MAX_DAYS", usertoken.DefaultMaxDays)))
 	rolemapping.Register(pool)
+	oauthclient.Register(pool)
 	// A person's email addresses (person_email.*) and the mail account that
 	// sends their codes (account_mail.*); docs/EMAIL_ADDRESSES.md.
 	personemail.Register(pool)
@@ -514,7 +523,42 @@ func runHTTP() error {
 	// BearerResolver; the handler itself just reads the body and
 	// dispatches.
 	mcpHTTPSrv := mcp.NewServer(srv, nil, nil)
-	mcp.Mount(apiRouter, mcp.HTTPConfig{Server: mcpHTTPSrv})
+	// OAuth sign-in for remote MCP clients (docs/MCP_OAUTH.md): a person
+	// connects Claude to one of their agents and Claude holds that agent's
+	// token. Needs KITP_PUBLIC_URL (the issuer, and the MCP URL tokens are
+	// for); without it the MCP endpoint takes hand-minted tokens only.
+	var oauthSrv *oauth.Server
+	if pub := strings.TrimSpace(os.Getenv("KITP_PUBLIC_URL")); pub != "" {
+		loginPath := ""
+		if mode == auth.ModeOIDC {
+			loginPath = "/api/v1/auth/oidc/start"
+		}
+		oauthSrv, err = oauth.New(oauth.Config{
+			PublicURL: pub,
+			Pool:      pgPool,
+			Session:   newSessionResolver(sessionMgr, insecureCookie),
+			LoginPath: loginPath,
+			MaxDays:   int64(envInt("KITP_TOKEN_MAX_DAYS", usertoken.DefaultMaxDays)),
+			Logger:    logger,
+		})
+		if err != nil {
+			// KITP_PUBLIC_URL serves other things too (mail links, the
+			// cross-origin check) with a laxer shape; one OAuth can't use
+			// leaves sign-in off rather than stopping kitpd.
+			log.Printf("MCP OAuth sign-in off: %v", err)
+			oauthSrv = nil
+		} else {
+			oauthSrv.Mount(apiRouter, mux)
+			log.Printf("MCP OAuth sign-in on: connector URL %s", oauthSrv.Resource())
+		}
+	} else {
+		log.Printf("MCP OAuth sign-in off: set KITP_PUBLIC_URL to let Claude connect with per-agent sign-in")
+	}
+	mcpCfg := mcp.HTTPConfig{Server: mcpHTTPSrv}
+	if oauthSrv != nil {
+		mcpCfg.ResourceMetadataURL = oauthSrv.ResourceMetadataURL()
+	}
+	mcp.Mount(apiRouter, mcpCfg)
 
 	// CAS chunked-upload + attachment download routes (Authed).
 	//
@@ -700,6 +744,17 @@ func runHTTP() error {
 			Interval:    10 * time.Minute,
 			Run: func(ctx context.Context, _ *pgxpool.Pool, _ struct{}) error {
 				return oidc.ReapState(ctx, pgPool)
+			},
+		},
+		{
+			Name:        "oauth.reap",
+			Description: "Delete spent OAuth codes and ended MCP client connections.",
+			Interval:    time.Hour,
+			Run: func(ctx context.Context, _ *pgxpool.Pool, _ struct{}) error {
+				if oauthSrv == nil {
+					return nil
+				}
+				return oauthSrv.Reap(ctx)
 			},
 		},
 		{
@@ -1054,8 +1109,9 @@ func runMCP() error {
 			return fmt.Errorf("KITP_TOKEN: %w", err)
 		}
 		// A scoped token (e.g. a forge's links-only token) is valid only
-		// on its own HTTP route, never as a general MCP credential.
-		if resolved.Scope != auth.TokenScopeFull {
+		// on its own HTTP route, never as a general MCP credential; an
+		// MCP-only one (OAuth) is.
+		if resolved.Scope != auth.TokenScopeFull && resolved.Scope != auth.TokenScopeMCP {
 			return fmt.Errorf("KITP_TOKEN: token is limited to %q and cannot drive MCP", resolved.Scope)
 		}
 		actor = &auth.UserCtx{ID: resolved.ID, DisplayName: resolved.DisplayName}
@@ -1101,13 +1157,10 @@ func newSessionResolver(mgr *session.Manager, insecureCookie bool) api.Resolver 
 
 // newBearerResolver returns the api.Router BearerResolver closure
 // for MCP requests. Extracts the bearer credential from the
-// Authorization header and resolves it via the token Manager.
-//
-// The MCP spec calls for a Bearer realm on 401 responses; the router
-// emits a plain JSON 401 today (matching the rest of the API surface)
-// and the MCP client treats either form as auth failure. If we want
-// to add a WWW-Authenticate header, the router would need a hook —
-// not worth the complexity for one route.
+// Authorization header and resolves it via the token Manager. The
+// router answers a missing or refused token with a 401 whose
+// WWW-Authenticate names the OAuth metadata on /api/v1/mcp
+// (Router.BearerResource).
 func newBearerResolver(mgr *token.Manager) api.Resolver {
 	return func(r *http.Request) (*auth.UserCtx, error) {
 		tok := extractBearer(r.Header.Get("Authorization"))

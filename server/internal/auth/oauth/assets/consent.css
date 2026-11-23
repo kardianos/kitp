@@ -1,0 +1,116 @@
+/* OAuth consent and notice pages (internal/auth/oauth). Colours follow
+   web/design/tokens.css; the page loads nothing else from the app. */
+:root {
+  color-scheme: light dark;
+  --bg: #fbfcfe;
+  --surface: #ffffff;
+  --fg: #141d28;
+  --muted: #6b7888;
+  --border: #dde4ee;
+  --accent: #5e6ad2;
+  --accent-hover: #6770d6;
+  --accent-fg: #ffffff;
+  --accent-tint: #edeefb;
+  --warning: #d98412;
+  --warning-tint: #fdf3e4;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1011;
+    --surface: #17181a;
+    --fg: #ececee;
+    --muted: #8f939c;
+    --border: #27282c;
+    --accent: #7b83eb;
+    --accent-hover: #8f96f0;
+    --accent-fg: #101129;
+    --accent-tint: #232645;
+    --warning: #f7b84b;
+    --warning-tint: #2a2112;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.5 "Source Sans 3", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+.card {
+  width: 100%;
+  max-width: 440px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  padding: 32px 28px 24px;
+  box-shadow: 0 12px 40px rgba(20, 29, 40, 0.08);
+}
+.brand {
+  margin: 0 0 20px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+}
+h1 { margin: 0 0 8px; font-size: 1.5rem; line-height: 1.25; }
+p { margin: 0 0 12px; }
+.lede { color: var(--fg); }
+.note, .foot { color: var(--muted); font-size: 0.875rem; }
+.foot { margin: 20px 0 0; }
+a { color: var(--accent); }
+.agents { border: 0; margin: 20px 0 16px; padding: 0; }
+.agents legend { padding: 0; margin-bottom: 8px; font-weight: 600; }
+.agent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  cursor: pointer;
+}
+.agent:has(input:checked) { border-color: var(--accent); background: var(--accent-tint); }
+.agent input { margin: 0; accent-color: var(--accent); width: 18px; height: 18px; }
+.agent-name { font-weight: 600; flex: 1; }
+.agent-note { flex-basis: 100%; padding-left: 30px; color: var(--muted); font-size: 0.8125rem; }
+.empty {
+  margin: 20px 0 16px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: var(--accent-tint);
+}
+.empty p:last-child { margin: 0; }
+.warn {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--warning-tint);
+  border: 1px solid var(--warning);
+  font-size: 0.875rem;
+}
+.actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+button, .button {
+  display: inline-block;
+  min-width: 104px;
+  padding: 10px 20px;
+  border-radius: 9999px;
+  border: 1px solid var(--border);
+  font: inherit;
+  font-weight: 600;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+}
+.secondary { background: transparent; color: var(--fg); }
+.secondary:hover { background: var(--bg); }
+.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+button:focus-visible, .button:focus-visible, .agent:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

@@ -82,6 +82,10 @@ export const ADMIN_SPEC = {
   // Background jobs (workspace Jobs screen) — list + run-now.
   schedulerList: 'scheduler.list',
   schedulerRun: 'scheduler.run',
+  // MCP apps (workspace screen) — the OAuth clients kitp trusts.
+  oauthClientList: 'oauth_client.list',
+  oauthClientSet: 'oauth_client.set',
+  oauthClientDelete: 'oauth_client.delete',
 } as const;
 
 /* -------------------------------------------------------------------------- */
@@ -719,15 +723,24 @@ export interface AgentDeleteOutput {
 /* ---- user_token.list / create / revoke (Agent tokens) -------------------- */
 
 /** What a token may do: '' = full access (MCP + every bearer route);
- *  'links' = only the forge link hook (POST /api/v1/links). */
-export type TokenScope = '' | 'links';
+ *  'links' = only the forge link hook (POST /api/v1/links); 'mcp' = only
+ *  the MCP endpoint — what an app connected with OAuth sign-in holds
+ *  (docs/MCP_OAUTH.md). */
+export type TokenScope = '' | 'links' | 'mcp';
 
-/** The token access choices, in mint-form order. Labels double as the
- *  per-row access badge. */
+/** The token access choices a person can mint, in mint-form order. ('mcp'
+ *  tokens come only from OAuth sign-in.) */
 export const TOKEN_SCOPE_OPTIONS: ReadonlyArray<{ value: TokenScope; label: string }> = [
   { value: '', label: 'Full access (MCP)' },
   { value: 'links', label: 'Links only (forge hook)' },
 ];
+
+/** Every scope's per-row access badge. */
+export const TOKEN_SCOPE_LABELS: Readonly<Record<TokenScope, string>> = {
+  '': 'Full access (MCP)',
+  links: 'Links only (forge hook)',
+  mcp: 'MCP only (app sign-in)',
+};
 
 export interface UserTokenRow {
   label: string;
@@ -785,6 +798,53 @@ export interface RoleMappingDeleteInput {
   claimValue: string;
 }
 export interface RoleMappingDeleteOutput {
+  ok: boolean;
+  deleted: number;
+}
+
+/* ---- oauth_client.list / set / delete (MCP apps screen) ------------------ */
+
+/**
+ * One OAuth client kitp trusts (allowed), or one a member asked for
+ * (server/internal/dom/oauthclient). `client_id` is an exact client ID or a
+ * prefix ending in '/'. `request_note` is set only while it isn't allowed
+ * and `allowed_note` only while it is — the screen pairs each with the
+ * button that flips it.
+ */
+export interface OAuthClientRow {
+  id: string;
+  client_id: string;
+  covers: string;
+  allowed: boolean;
+  waiting: boolean;
+  status: string;
+  redirect_uri: string;
+  requested_by_name: string;
+  requested_at?: string;
+  request_count: number;
+  decided_by_name: string;
+  decided_at?: string;
+  request_note: string;
+  allowed_note: string;
+}
+export interface OAuthClientListOutput {
+  rows: OAuthClientRow[];
+}
+/** Name the row by `id` (a listed row) or by `clientId` (added when new). */
+export interface OAuthClientSetInput {
+  id?: string;
+  clientId?: string;
+  allowed: boolean;
+}
+export interface OAuthClientSetOutput {
+  id: string;
+  client_id: string;
+  allowed: boolean;
+}
+export interface OAuthClientDeleteInput {
+  id: string;
+}
+export interface OAuthClientDeleteOutput {
   ok: boolean;
   deleted: number;
 }
@@ -993,7 +1053,7 @@ function decodeCardTypeRow(j: Record<string, unknown>): CardTypeRow {
 }
 
 function asTokenScope(v: unknown): TokenScope {
-  return v === 'links' ? 'links' : '';
+  return v === 'links' || v === 'mcp' ? v : '';
 }
 
 function decodeUserTokenRow(j: Record<string, unknown>): UserTokenRow {
@@ -1007,6 +1067,28 @@ function decodeUserTokenRow(j: Record<string, unknown>): UserTokenRow {
   if (exp !== undefined) out.expires_at = exp;
   const rev = asStrOpt(j['revoked_at']);
   if (rev !== undefined) out.revoked_at = rev;
+  return out;
+}
+
+function decodeOAuthClientRow(j: Record<string, unknown>): OAuthClientRow {
+  const out: OAuthClientRow = {
+    id: asStr(j['id']),
+    client_id: asStr(j['client_id']),
+    covers: asStr(j['covers']),
+    allowed: asBool(j['allowed']),
+    waiting: asBool(j['waiting']),
+    status: asStr(j['status']),
+    redirect_uri: asStr(j['redirect_uri']),
+    requested_by_name: asStr(j['requested_by_name']),
+    request_count: asNum(j['request_count']),
+    decided_by_name: asStr(j['decided_by_name']),
+    request_note: asStr(j['request_note']),
+    allowed_note: asStr(j['allowed_note']),
+  };
+  const requestedAt = asStrOpt(j['requested_at']);
+  if (requestedAt !== undefined) out.requested_at = requestedAt;
+  const decidedAt = asStrOpt(j['decided_at']);
+  if (decidedAt !== undefined) out.decided_at = decidedAt;
   return out;
 }
 
@@ -1664,6 +1746,48 @@ export function registerAdminSpecs(api: Api): void {
       action: 'revoke',
       encode: (i) => ({ user_id: i.userId, label: i.label }),
       decode: (raw): UserTokenRevokeOutput => {
+        const j = asObj(raw);
+        return { ok: j['ok'] === true, deleted: asNum(j['deleted']) };
+      },
+    });
+  }
+
+  /* ---- MCP apps: the OAuth clients kitp trusts (list / set / delete). ----- */
+
+  if (!api.registry.has({ endpoint: 'oauth_client', action: 'list' })) {
+    api.define<Record<string, never>, OAuthClientListOutput>({
+      endpoint: 'oauth_client',
+      action: 'list',
+      encode: () => ({}),
+      decode: (raw): OAuthClientListOutput => ({
+        rows: asArray(asObj(raw)['rows']).map((r) => decodeOAuthClientRow(asObj(r))),
+      }),
+    });
+  }
+
+  if (!api.registry.has({ endpoint: 'oauth_client', action: 'set' })) {
+    api.define<OAuthClientSetInput, OAuthClientSetOutput>({
+      endpoint: 'oauth_client',
+      action: 'set',
+      encode: (i) => {
+        const wire: Record<string, unknown> = { allowed: i.allowed };
+        if (i.id !== undefined && i.id !== '') wire['id'] = i.id;
+        if (i.clientId !== undefined && i.clientId !== '') wire['client_id'] = i.clientId;
+        return wire;
+      },
+      decode: (raw): OAuthClientSetOutput => {
+        const j = asObj(raw);
+        return { id: asStr(j['id']), client_id: asStr(j['client_id']), allowed: asBool(j['allowed']) };
+      },
+    });
+  }
+
+  if (!api.registry.has({ endpoint: 'oauth_client', action: 'delete' })) {
+    api.define<OAuthClientDeleteInput, OAuthClientDeleteOutput>({
+      endpoint: 'oauth_client',
+      action: 'delete',
+      encode: (i) => ({ id: i.id }),
+      decode: (raw): OAuthClientDeleteOutput => {
         const j = asObj(raw);
         return { ok: j['ok'] === true, deleted: asNum(j['deleted']) };
       },

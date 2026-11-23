@@ -4392,6 +4392,15 @@ select optgroup {
   color: var(--color-danger-fg);
   border-color: var(--color-danger);
 }
+/* tone: 'primary' — a positive row action (Allow), in the primary colour. */
+.masterdetail__relation-remove--primary {
+  color: var(--color-accent-fg);
+}
+.masterdetail__relation-remove--primary:hover {
+  background: var(--color-accent-hover);
+  color: var(--color-accent-fg);
+  border-color: transparent;
+}
 .masterdetail__relation-add {
   display: flex;
   flex-wrap: wrap;

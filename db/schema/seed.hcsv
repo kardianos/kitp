@@ -28,6 +28,11 @@ user_id, role_id,         scope_card_id
 1,       $role.worker,    null
 
 
+## table oauth_client | doc="The OAuth client kitp trusts out of the box: Claude Code (its published client details, claude.ai). The Claude apps' own client arrives as a member's request the first time someone connects from claude.ai, for an admin to allow once on the MCP apps screen (its address isn't published)." | on_conflict="client_id"
+### rows
+client_id, allowed
+https://claude.ai/oauth/claude-code-client-metadata, true
+
 ## table role_mapping | doc="Default OIDC group → role mappings for the dex dev stack." | on_conflict="claim_value"
 ### rows
 claim_value, role_id

@@ -51,7 +51,7 @@ import type {
   FlowListOutput,
   TokenScope,
 } from './specs.js';
-import { TOKEN_SCOPE_OPTIONS } from './specs.js';
+import { TOKEN_SCOPE_LABELS, TOKEN_SCOPE_OPTIONS } from './specs.js';
 
 import { icon } from '../ui/icons.js';
 import { schemaForCardType } from '../filter/attribute-schema.js';
@@ -2283,7 +2283,7 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     const access = document.createElement('span');
     access.className = 'nested-editor__token-row-scope';
     access.dataset.neTokenRowScope = t.scope;
-    access.textContent = TOKEN_SCOPE_OPTIONS.find((o) => o.value === t.scope)?.label ?? t.scope;
+    access.textContent = TOKEN_SCOPE_LABELS[t.scope] ?? t.scope;
     row.append(access);
     const created = document.createElement('span');
     created.className = 'nested-editor__token-row-time muted';

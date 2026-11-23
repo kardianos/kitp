@@ -338,7 +338,7 @@ export {
   fieldText,
   readPath,
 } from './admin/master-detail.js';
-export { registerAdminSpecs, ADMIN_SPEC, userLabel } from './admin/specs.js';
+export { registerAdminSpecs, ADMIN_SPEC, userLabel, TOKEN_SCOPE_LABELS, TOKEN_SCOPE_OPTIONS } from './admin/specs.js';
 export {
   NestedEditor,
   registerNestedEditor,

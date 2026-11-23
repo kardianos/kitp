@@ -7,7 +7,10 @@
 //   - POST  /api/v1/mcp
 //       Body: one JSON-RPC 2.0 message
 //       Auth: Authorization: Bearer <user_token value>  (resolved by
-//             the apiRouter's BearerResolver before this handler runs)
+//             the apiRouter's BearerResolver before this handler runs).
+//             The token is one a person minted for an agent, or one an
+//             OAuth client (Claude) got through internal/auth/oauth; a
+//             401 names the OAuth metadata when that is on.
 //       Resp: application/json with the matching JSON-RPC response, or
 //             204 No Content for notifications (messages without `id`)
 //
@@ -40,6 +43,11 @@ type HTTPConfig struct {
 	// Server is the MCP server whose tools we expose. Use the same
 	// instance you'd hand to Run() — it carries the dispatcher.
 	Server *Server
+	// ResourceMetadataURL, when set, is this endpoint's OAuth protected
+	// resource metadata (RFC 9728, served by internal/auth/oauth). A 401
+	// names it so an OAuth client can find kitp's sign-in. Empty: the
+	// endpoint takes only tokens minted by hand.
+	ResourceMetadataURL string
 }
 
 // Mount registers POST /api/v1/mcp on the apiRouter via Bearer (the
@@ -49,7 +57,8 @@ type HTTPConfig struct {
 // context, so the dispatcher's per-handler authz hooks see the
 // authenticated actor unchanged.
 func Mount(rt *api.Router, cfg HTTPConfig) {
-	rt.Bearer("POST /api/v1/mcp", func(ctx context.Context, w http.ResponseWriter, r *http.Request, _ *auth.UserCtx) error {
+	// Full tokens and the mcp-scoped ones OAuth issues for this endpoint.
+	rt.BearerResource("POST /api/v1/mcp", auth.TokenScopeMCP, cfg.ResourceMetadataURL, func(ctx context.Context, w http.ResponseWriter, r *http.Request, _ *auth.UserCtx) error {
 		return handle(ctx, w, r, cfg)
 	})
 }

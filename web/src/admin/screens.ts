@@ -23,6 +23,7 @@
  *   - Comm Channels   comm_channel.list         (project-scoped; secrets omitted)
  *   - Activity Sinks  activity_sink.list        (project-scoped; secret omitted)
  *   - Comm Log        comm_log.list             (project-scoped; event list)
+ *   - MCP apps        oauth_client.list         (Allow / Stop allowing per client ID)
  *
  * Nested-detail FOLLOW-UPS (deliberately NOT blocking; basic list+detail ship):
  *   - Screens → per-screen filter cards
@@ -233,6 +234,7 @@ export const USERS_SCREEN: MasterDetailConfig = {
           intent: 'restoreLogin',
           spec: 'user.restore_login',
           label: 'Allow sign-in again',
+          tone: 'primary',
           input: { userAccountId: { payload: 'id' } },
         },
       },
@@ -574,6 +576,93 @@ export const OIDC_CLAIMS_SCREEN: NestedEditorConfig = {
 };
 
 /* -------------------------------------------------------------------------- */
+/* MCP apps = oauth_client.list (NON-CARD source).                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The OAuth clients kitp trusts to sign members in to MCP as one of their
+ * agents (Claude, Claude Code), by client ID — the address an app
+ * publishes its details at, or a prefix ending in '/' — and the members'
+ * requests for ones it doesn't, listed first as "Waiting for an admin" with
+ * who asked (docs/MCP_OAUTH.md). The detail's two singular relations carry
+ * the decision: the request note (set only while it isn't allowed) with
+ * **Allow**, the allowed note (set only while it is) with **Stop allowing**
+ * — both `oauth_client.set` by row id, then the row reloads. "+ Allow a
+ * client" adds one by client ID before anyone asks.
+ */
+export const MCP_APPS_SCREEN: MasterDetailConfig = {
+  type: 'MasterDetail',
+  title: 'MCP apps',
+  scopeKey: 'admin.mcp_apps',
+  list: {
+    spec: 'oauth_client.list',
+    rowHeight: 56,
+    search: { field: 'client_id', placeholder: 'Search client IDs…' },
+    row: { title: 'client_id', subtitle: 'status' },
+  },
+  detail: {
+    titleField: 'client_id',
+    empty: 'Select a client to see who asked for it and allow it, or allow a client yourself.',
+    fields: [
+      { name: 'status', label: 'Status', kind: 'readonly' },
+      { name: 'covers', label: 'Trusts', kind: 'readonly' },
+      { name: 'redirect_uri', label: 'Return address it asked for', kind: 'readonly' },
+    ],
+    relations: [
+      {
+        title: 'Request',
+        valueField: 'request_note',
+        remove: {
+          intent: 'allowClient',
+          spec: 'oauth_client.set',
+          label: 'Allow',
+          tone: 'primary',
+          input: { id: { payload: 'id' }, allowed: { lit: true } },
+        },
+      },
+      {
+        title: 'Allowed',
+        valueField: 'allowed_note',
+        remove: {
+          intent: 'disallowClient',
+          spec: 'oauth_client.set',
+          label: 'Stop allowing',
+          input: { id: { payload: 'id' }, allowed: { lit: false } },
+        },
+      },
+    ],
+  },
+  create: {
+    spec: 'oauth_client.set',
+    title: 'Allow a client',
+    buttonLabel: '+ Allow a client',
+    fields: [
+      {
+        name: 'client_id',
+        label: 'Client ID (end it with / to trust every client under it)',
+        kind: 'text',
+        required: true,
+        placeholder: 'https://mcp.example.com/oauth/client.json',
+      },
+    ],
+    input: { clientId: { payload: 'client_id' }, allowed: { lit: true } },
+    optimisticRaw: (p) => ({
+      client_id: typeof p['client_id'] === 'string' ? p['client_id'].trim() : '',
+      allowed: true,
+      status: 'Allowed',
+      request_note: '',
+      allowed_note: 'Allowed',
+    }),
+    resultIdField: 'id',
+  },
+  delete: {
+    spec: 'oauth_client.delete',
+    confirm: 'Remove this client? Members can no longer connect it, and its connections end at their next refresh.',
+    input: { id: { payload: 'id' } },
+  },
+};
+
+/* -------------------------------------------------------------------------- */
 /* Agents = user.select { is_agent: true } (NON-CARD source, read-only).       */
 /* -------------------------------------------------------------------------- */
 
@@ -862,6 +951,7 @@ export type AdminView =
   | 'workflows'
   | 'roles'
   | 'oidc_claims'
+  | 'mcp_apps'
   | 'comm_channels'
   | 'activity_sinks'
   | 'comm_log'
@@ -942,6 +1032,7 @@ const ADMIN_SCREENS: Record<AdminView, AdminScreenConfig> = {
   workflows: WORKFLOWS_SCREEN,
   roles: ROLES_SCREEN,
   oidc_claims: OIDC_CLAIMS_SCREEN,
+  mcp_apps: MCP_APPS_SCREEN,
   comm_channels: COMM_CHANNELS_SCREEN,
   activity_sinks: ACTIVITY_SINKS_SCREEN,
   comm_log: COMM_LOG_SCREEN,
@@ -983,6 +1074,7 @@ export const ADMIN_SECTION: Record<AdminView, AdminSection> = {
   agents: 'workspace',
   roles: 'workspace',
   oidc_claims: 'workspace',
+  mcp_apps: 'workspace',
   attributes: 'workspace',
   screens: 'project',
   enums: 'project',

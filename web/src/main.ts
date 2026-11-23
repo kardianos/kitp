@@ -142,6 +142,7 @@ const ADMIN_LINK_LABELS: Record<AdminView, string> = {
   workflows: 'Workflows',
   roles: 'Roles',
   oidc_claims: 'OIDC Claims',
+  mcp_apps: 'MCP apps',
   comm_channels: 'Comm Channels',
   activity_sinks: 'Activity Sinks',
   comm_log: 'Comm Log',

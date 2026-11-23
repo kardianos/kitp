@@ -177,8 +177,12 @@ export interface MasterDetailRelation {
   itemLabel?: string;
   /** A second muted label field (e.g. the scope project title). */
   itemSubLabel?: string;
-  /** The remove intent + spec + its declarative input (payload → wire). */
-  remove?: { intent: string; spec: string; label?: string; input: InputSpec };
+  /**
+   * The row's action button: intent + spec + its declarative input (payload →
+   * wire). `tone` colours it — 'danger' (the default) for a Revoke / Remove,
+   * 'primary' for a positive action such as Allow.
+   */
+  remove?: { intent: string; spec: string; label?: string; tone?: 'danger' | 'primary'; input: InputSpec };
   /** Inline add form: an intent + spec + fields + its declarative input. */
   add?: {
     intent: string;
@@ -1514,7 +1518,9 @@ export class MasterDetail extends Control<MasterDetailConfig> {
       const remove = rel.remove;
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'btn masterdetail__relation-remove';
+      btn.className = remove.tone === 'primary'
+        ? 'btn btn-primary masterdetail__relation-remove masterdetail__relation-remove--primary'
+        : 'btn masterdetail__relation-remove';
       btn.dataset.mdRelationRemove = '';
       btn.textContent = remove.label ?? 'Revoke';
       this.listen(btn, 'click', () => {

@@ -17,6 +17,14 @@
 //                          than the session cookie. Used by MCP. Only
 //                          unrestricted (full-scope) tokens pass.
 //
+//   - BearerResource(pattern, scope, metadataURL, h)
+//                          a Bearer route that is an OAuth protected
+//                          resource (/api/v1/mcp): unrestricted tokens
+//                          and ones limited to `scope` pass, and its 401
+//                          names metadataURL (RFC 9728) so an OAuth
+//                          client can find kitp's sign-in
+//                          (internal/auth/oauth).
+//
 //   - BearerScoped(pattern, scope, h)
 //                          bearer token that is unrestricted OR limited
 //                          to `scope` (e.g. a forge's links-only token
@@ -47,6 +55,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"strings"
 
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/obs/logpath"
@@ -169,7 +178,7 @@ func (rt *Router) Authed(pattern string, h AuthedHandler) {
 	if rt.session == nil {
 		panic("api.Router: Authed registered but RouterConfig.SessionResolver is nil")
 	}
-	rt.mux.Handle(pattern, rt.wrap(rt.session, "session", auth.TokenScopeFull, h))
+	rt.mux.Handle(pattern, rt.wrap(rt.session, "session", auth.TokenScopeFull, "", h))
 	rt.routes = append(rt.routes, RouteSpec{Tier: "authed", Pattern: pattern})
 }
 
@@ -179,7 +188,21 @@ func (rt *Router) Authed(pattern string, h AuthedHandler) {
 // Panics when BearerResolver is unset, for the same
 // startup-trip-rather-than-runtime-401 reason.
 func (rt *Router) Bearer(pattern string, h BearerHandler) {
-	rt.bearerRoute(pattern, auth.TokenScopeFull, h)
+	rt.bearerRoute(pattern, auth.TokenScopeFull, "", h)
+}
+
+// BearerResource registers a Bearer route that is an OAuth protected
+// resource: its 401 names the resource's metadata document (RFC 9728,
+// `resource_metadata="…"` in WWW-Authenticate), which is how an OAuth
+// client such as Claude finds kitp's authorization server and starts
+// sign-in. It admits unrestricted tokens and tokens limited to `scope`
+// (the OAuth access tokens issued for this resource). An empty
+// metadataURL leaves the challenge plain.
+func (rt *Router) BearerResource(pattern, scope, metadataURL string, h BearerHandler) {
+	if scope == auth.TokenScopeFull {
+		panic("api.Router: BearerResource needs the resource's token scope")
+	}
+	rt.bearerRoute(pattern, scope, metadataURL, h)
 }
 
 // BearerScoped registers a token-authenticated handler that ALSO admits
@@ -189,14 +212,17 @@ func (rt *Router) BearerScoped(pattern, scope string, h BearerHandler) {
 	if scope == auth.TokenScopeFull {
 		panic("api.Router: BearerScoped needs a non-empty scope; use Bearer")
 	}
-	rt.bearerRoute(pattern, scope, h)
+	rt.bearerRoute(pattern, scope, "", h)
 }
 
-func (rt *Router) bearerRoute(pattern, scope string, h BearerHandler) {
+func (rt *Router) bearerRoute(pattern, scope, metadataURL string, h BearerHandler) {
 	if rt.bearer == nil {
 		panic("api.Router: Bearer registered but RouterConfig.BearerResolver is nil")
 	}
-	rt.mux.Handle(pattern, rt.wrap(rt.bearer, "bearer", scope, h))
+	if strings.ContainsAny(metadataURL, "\"\\\r\n") {
+		panic("api.Router: BearerResource metadata URL must not contain quotes, backslashes or line breaks")
+	}
+	rt.mux.Handle(pattern, rt.wrap(rt.bearer, "bearer", scope, metadataURL, h))
 	tier := "bearer"
 	if scope != auth.TokenScopeFull {
 		tier = "bearer:" + scope
@@ -218,7 +244,9 @@ func (rt *Router) Routes() []RouteSpec {
 
 // wrap resolves the credential, then admits the request when the
 // resolved token is unrestricted or carries exactly routeScope.
-func (rt *Router) wrap(resolve Resolver, kind, routeScope string, h AuthedHandler) http.HandlerFunc {
+// metadataURL, on a bearer route, goes into the 401's challenge
+// (BearerResource).
+func (rt *Router) wrap(resolve Resolver, kind, routeScope, metadataURL string, h AuthedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer rt.recoverPanic(w, r)
 		if kind != "bearer" && !rt.sameOrigin(w, r) {
@@ -231,11 +259,11 @@ func (rt *Router) wrap(resolve Resolver, kind, routeScope string, h AuthedHandle
 			// 401 either way.
 			rt.logger.InfoContext(r.Context(), "auth rejected",
 				"kind", kind, "path", logpath.Of(r.URL.Path), "err", err)
-			rt.unauthorized(w, r, kind)
+			rt.unauthorized(w, r, kind, metadataURL, true)
 			return
 		}
 		if user == nil {
-			rt.unauthorized(w, r, kind)
+			rt.unauthorized(w, r, kind, metadataURL, false)
 			return
 		}
 		if user.TokenScope != auth.TokenScopeFull && user.TokenScope != routeScope {
@@ -257,9 +285,21 @@ func (rt *Router) wrap(resolve Resolver, kind, routeScope string, h AuthedHandle
 // SDKs, curl --negotiate, etc.) see the challenge per RFC 6750.
 // Cookie-authed 401s don't need a WWW-Authenticate header — the SPA
 // reads the JSON envelope directly.
-func (rt *Router) unauthorized(w http.ResponseWriter, r *http.Request, kind string) {
+//
+// rejected says a token was presented and refused (expired, revoked,
+// unknown): the challenge then carries error="invalid_token", which
+// tells an OAuth client to refresh or sign in again. metadataURL, when
+// set, points the client at the resource's RFC 9728 metadata.
+func (rt *Router) unauthorized(w http.ResponseWriter, r *http.Request, kind, metadataURL string, rejected bool) {
 	if kind == "bearer" {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="kitp"`)
+		challenge := `Bearer realm="kitp"`
+		if rejected {
+			challenge += `, error="invalid_token"`
+		}
+		if metadataURL != "" {
+			challenge += `, resource_metadata="` + metadataURL + `"`
+		}
+		w.Header().Set("WWW-Authenticate", challenge)
 	}
 	rt.writeErr(w, r, ErrUnauthenticated)
 }

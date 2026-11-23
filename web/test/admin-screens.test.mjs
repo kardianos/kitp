@@ -84,6 +84,11 @@ function rowsFor(key, data) {
       return [{ id: '120', title: 'Docs (PROD)', host: 'docs.example.com', public: true, root_page_id: '700', root_title: 'Home', root_project_id: PROJECT_ID, statuses: ['Docs › Published'], page_count: 4, built_at: '2026-06-01T00:00:00Z', active_build_id: '9', warnings: [], dirty: false, last_error: '' }];
     case 'theme.list':
       return [{ id: '130', title: 'Docs look', base: 'newspaper', base_name: 'Newspaper', nav: '', accent: '#aa0000', footer: '', files: [], portals: ['Docs (PROD)'] }];
+    case 'oauth_client.list':
+      return [
+        { id: '140', client_id: 'https://apps.example/client.json', covers: 'This client only', allowed: false, waiting: true, status: 'Waiting for an admin', redirect_uri: 'https://apps.example/cb', requested_by_name: 'Wes', requested_at: '2026-11-23T10:00:00Z', request_count: 1, decided_by_name: '', request_note: 'Asked by Wes on 2026-11-23', allowed_note: '' },
+        { id: '141', client_id: 'https://claude.ai/oauth/claude-code-client-metadata', covers: 'This client only', allowed: true, waiting: false, status: 'Allowed', redirect_uri: '', requested_by_name: '', request_count: 0, decided_by_name: '', request_note: '', allowed_note: 'Allowed' },
+      ];
     case 'theme.bases':
       return [{ key: 'newspaper', name: 'Newspaper', description: 'Columns.', nav: 'section', paginate: 9, order: 'newest', files: [] }];
     default:
@@ -173,6 +178,7 @@ const SCREEN_SCOPE = {
   activity_sinks: ['admin', 'activity_sinks', 'items'],
   portals: ['admin', 'portals', 'items'],
   themes: ['admin', 'themes', 'items'],
+  mcp_apps: ['admin', 'mcp_apps', 'items'],
 };
 
 for (const [view, itemsPath] of Object.entries(SCREEN_SCOPE)) {
@@ -374,7 +380,7 @@ test('ADMIN_SECTION classifies every admin view (Workspace global vs Project sco
   // Confirmed grouping: global-data screens are Workspace; the rest are Project
   // (always filtered to the active project).
   const inSection = (s) => M.ADMIN_VIEWS.filter((v) => M.ADMIN_SECTION[v] === s).sort();
-  assert.deepEqual(inSection('workspace'), ['agents', 'areas', 'attributes', 'jobs', 'mail_intake', 'oidc_claims', 'people', 'portals', 'roles', 'themes']);
+  assert.deepEqual(inSection('workspace'), ['agents', 'areas', 'attributes', 'jobs', 'mail_intake', 'mcp_apps', 'oidc_claims', 'people', 'portals', 'roles', 'themes']);
   assert.deepEqual(inSection('project'), ['activity_sinks', 'comm_channels', 'comm_log', 'enums', 'project_areas', 'screens', 'workflows']);
 });
 
@@ -413,6 +419,85 @@ test('every PROJECT admin screen scopes its list to the active project', () => {
 /* Agents: the nested editor manages an agent's "acts as" roles (web-only,     */
 /* via the existing user_role.list / .set / .revoke handlers).                 */
 /* -------------------------------------------------------------------------- */
+
+test('MCP apps: a waiting request offers Allow, an allowed client Stop allowing — both oauth_client.set by id', async () => {
+  const sent = [];
+  let allowed = false;
+  const transport = {
+    async send(body) {
+      const req = JSON.parse(body);
+      const subresponses = req.subrequests.map((sr) => {
+        const key = `${sr.endpoint}.${sr.action}`;
+        const data = sr.data ?? {};
+        sent.push({ key, data });
+        switch (key) {
+          case 'oauth_client.list':
+            return { id: sr.id, ok: true, data: { rows: [{
+              id: '140', client_id: 'https://apps.example/client.json', covers: 'This client only',
+              allowed, waiting: !allowed, status: allowed ? 'Allowed' : 'Waiting for an admin',
+              redirect_uri: 'https://apps.example/cb',
+              requested_by_name: 'Wes', request_count: 1, decided_by_name: allowed ? 'Ada' : '',
+              request_note: allowed ? '' : 'Asked by Wes on 2026-11-23',
+              allowed_note: allowed ? 'Allowed by Ada on 2026-11-23' : '',
+            }] } };
+          case 'oauth_client.set':
+            if (data.id === undefined) {
+              return { id: sr.id, ok: true, data: { id: '150', client_id: data.client_id, allowed: data.allowed } };
+            }
+            allowed = data.allowed === true;
+            return { id: sr.id, ok: true, data: { id: '140', client_id: 'https://apps.example/client.json', allowed } };
+          default:
+            return { id: sr.id, ok: false, error: { code: 'unknown', message: key } };
+        }
+      });
+      return { status: 200, text: JSON.stringify({ subresponses }) };
+    },
+  };
+  const dispatcher = new M.Dispatcher({ transport });
+  const api = new M.Api(dispatcher);
+  M.registerAdminSpecs(api);
+  const tree = new M.TreeNode({}, []);
+  const ctrl = M.Control.New('MasterDetail', M.adminScreenConfig('mcp_apps'), { api, tree, scope: { projectId: null } });
+  ctrl.mount(new FakeElement('div'));
+  await settle(dispatcher);
+  tree.at(['admin', 'mcp_apps', 'selectedId']).set('140');
+  M.flushSync?.();
+
+  const button = (section) => ctrl.el
+    .querySelector(`[data-md-relation="${section}"]`)
+    ?.querySelector('[data-md-relation-remove]');
+  assert.ok(button('Request'), 'the waiting request has an Allow button');
+  assert.equal(button('Request').textContent, 'Allow');
+  assert.match(button('Request').className, /\bbtn-primary\b/, 'Allow is a primary (blue) button, not a red revoke');
+  assert.equal(button('Allowed'), null, 'nothing to stop allowing yet');
+
+  button('Request').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  const allow = sent.find((r) => r.key === 'oauth_client.set');
+  assert.deepEqual(allow.data, { id: '140', allowed: true }, 'Allow sets the row by id');
+
+  // The row reloaded as allowed: now Stop allowing.
+  assert.equal(button('Request'), null, 'no request once allowed');
+  assert.equal(button('Allowed').textContent, 'Stop allowing');
+  assert.doesNotMatch(button('Allowed').className, /\bbtn-primary\b/, 'Stop allowing keeps the danger tone');
+  button('Allowed').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  const sets = sent.filter((r) => r.key === 'oauth_client.set');
+  assert.deepEqual(sets[1].data, { id: '140', allowed: false }, 'Stop allowing clears it by id');
+
+  // + Allow a client sends the client ID it was given, allowed.
+  ctrl.intent('createItem', { client_id: 'https://mcp.example.com/oauth/' });
+  await settle(dispatcher);
+  const created = sent.filter((r) => r.key === 'oauth_client.set').at(-1);
+  assert.deepEqual(created.data, { allowed: true, client_id: 'https://mcp.example.com/oauth/' });
+  const cfg = M.adminScreenConfig('mcp_apps');
+  assert.ok(cfg.actions.some((a) => a.intent === 'deleteItem' && a.spec === 'oauth_client.delete'));
+});
+
+test('Agent tokens: an app sign-in token reads as MCP only', () => {
+  assert.equal(M.TOKEN_SCOPE_LABELS.mcp, 'MCP only (app sign-in)');
+  assert.ok(!M.TOKEN_SCOPE_OPTIONS.some((o) => o.value === 'mcp'), 'mcp tokens are not minted by hand');
+});
 
 test('Agents nested editor: lists, assigns, and revokes an agent\'s roles', async () => {
   const sent = [];

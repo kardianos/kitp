@@ -48,6 +48,10 @@ const (
 	// (POST /api/v1/links) — a code forge's credential that can link
 	// changes to tasks and nothing else.
 	TokenScopeLinks = "links"
+	// TokenScopeMCP limits a token to the MCP endpoint (POST /api/v1/mcp):
+	// the access token an OAuth client such as Claude holds
+	// (internal/auth/oauth), issued for that resource and no other.
+	TokenScopeMCP = "mcp"
 )
 
 type ctxKey struct{}
